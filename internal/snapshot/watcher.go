@@ -43,26 +43,33 @@ func NewWatcher(s *Snapshotter, quietSeconds, fileThreshold int, logFn LogFunc) 
 	}
 }
 
-// Start begins watching for file changes.
+// Start begins watching for file changes. Non-blocking — snapshot and
+// directory walking happen in background goroutines.
 func (w *Watcher) Start() error {
-	// Take initial snapshot
-	if snap, err := w.snapshotter.Create("init"); err != nil {
-		w.logFn("Warning: initial snapshot failed: %v", err)
-	} else {
-		w.logFn("Snapshot #%d (init)", snap.ID)
-		w.lastSnapshot = time.Now()
-	}
+	// Take initial snapshot in background (can be slow on large dirs)
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		if snap, err := w.snapshotter.Create("init"); err != nil {
+			w.logFn("Warning: initial snapshot failed: %v", err)
+		} else {
+			w.logFn("Snapshot #%d (init)", snap.ID)
+			w.mu.Lock()
+			w.lastSnapshot = time.Now()
+			w.mu.Unlock()
+		}
+	}()
 
 	// Start native file watcher
 	var err error
 	w.fsWatcher, err = fsnotify.NewWatcher()
 	if err != nil {
 		w.logFn("Warning: file watcher failed: %v", err)
-		return nil // non-fatal, snapshots still work via pre-command hooks
+		return nil
 	}
 
-	// Add project directory and all subdirectories (excluding .yu and .git)
-	w.addDirRecursive(w.snapshotter.ProjectDir)
+	// Walk directories in background (can be slow on large trees)
+	go w.addDirRecursive(w.snapshotter.ProjectDir)
 
 	w.wg.Add(1)
 	go w.watchLoop()
@@ -187,6 +194,15 @@ func (w *Watcher) shouldIgnore(path string) bool {
 	return false
 }
 
+// Directories to skip when adding watchers (large or irrelevant).
+var skipDirs = map[string]bool{
+	".yu": true, ".git": true, "node_modules": true,
+	".next": true, ".nuxt": true, "__pycache__": true,
+	".venv": true, "venv": true, ".tox": true,
+	"target": true, "build": true, "dist": true,
+	".gradle": true, ".cache": true,
+}
+
 // addDirRecursive adds a directory and all subdirectories to the watcher.
 func (w *Watcher) addDirRecursive(root string) {
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -194,11 +210,13 @@ func (w *Watcher) addDirRecursive(root string) {
 			return nil
 		}
 		if info.IsDir() {
-			name := info.Name()
-			if name == ".yu" || name == ".git" || name == "node_modules" {
+			if skipDirs[info.Name()] {
 				return filepath.SkipDir
 			}
-			w.fsWatcher.Add(path)
+			if err := w.fsWatcher.Add(path); err != nil {
+				// Likely hit fd limit — stop adding more
+				return filepath.SkipAll
+			}
 		}
 		return nil
 	})
