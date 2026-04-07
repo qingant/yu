@@ -1,0 +1,12 @@
+.yu/
+
+# Binary
+/yu
+*.exe
+
+# Test artifacts
+*.test
+coverage.out
+
+# OS
+.DS_Store
