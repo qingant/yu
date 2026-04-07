@@ -95,8 +95,9 @@ func (s *Sandbox) Run() error {
 		os.Exit(1)
 	}()
 
-	// Start API proxy (local reverse proxy for key injection)
-	// No global HTTP proxy — all traffic goes direct except routes configured here.
+	yuLogStderr("Starting sandbox %s", s.ID)
+
+	// Start API proxy
 	s.apiProxy = netproxy.NewAPIProxy()
 	s.apiProxy.SetAuditFunc(func(method, url string, status int, note string) {
 		yuLog("[api] %s %s → %d %s", method, url, status, note)
@@ -108,11 +109,12 @@ func (s *Sandbox) Run() error {
 		return fmt.Errorf("starting API proxy: %w", err)
 	}
 	defer s.apiProxy.Stop()
+	yuLogStderr("API proxy on %s", s.apiAddr)
 
-	// Now configure routes — needs s.apiAddr to set BASE_URL overrides
 	s.configureKeyReplacements()
 
 	// Start snapshot watcher
+	yuLogStderr("Starting snapshot watcher")
 	snapCfg := s.Config.Snapshot
 	snapper := snapshot.New(s.ProjectDir, snapCfg.Keep)
 	s.watcher = snapshot.NewWatcher(snapper, snapCfg.QuietSeconds, snapCfg.FileThreshold, yuLog)
@@ -122,6 +124,7 @@ func (s *Sandbox) Run() error {
 	defer s.watcher.Stop()
 
 	// Start command proxy daemon
+	yuLogStderr("Starting command proxy")
 	socketPath := filepath.Join(s.TmpDir, "cmdproxy.sock")
 	s.cmdDaemon = cmdproxy.NewDaemon(socketPath, s.Config.Credentials, s.ProjectDir, s.TmpDir)
 	s.cmdDaemon.PreCommandHook = s.watcher.PreCommand
@@ -130,7 +133,7 @@ func (s *Sandbox) Run() error {
 	}
 	defer s.cmdDaemon.Stop()
 
-	// Generate shims for intercepted commands
+	// Generate shims
 	shimsDir := filepath.Join(s.TmpDir, "shims")
 	yuBin, err := os.Executable()
 	if err != nil {
@@ -140,10 +143,7 @@ func (s *Sandbox) Run() error {
 		return fmt.Errorf("generating shims: %w", err)
 	}
 
-	yuLog("Sandbox %s started", s.ID)
-	yuLog("Project: %s", s.ProjectDir)
-	yuLog("Command: %s", strings.Join(s.Command, " "))
-	yuLog("Temp: %s", s.TmpDir)
+	yuLogStderr("Launching: %s", strings.Join(s.Command, " "))
 
 	// Launch the process
 	exitCode, err := s.launch()

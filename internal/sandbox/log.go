@@ -21,14 +21,19 @@ func initLog(tmpDir string) {
 	path := filepath.Join(tmpDir, "yu.log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		// Fallback: log to stderr
 		log = &logger{file: os.Stderr, path: "stderr"}
+		fmt.Fprintf(os.Stderr, "[yu] Log: stderr (failed to create %s: %v)\n", path, err)
 		return
 	}
 	log = &logger{file: f, path: path}
-
-	// Print the log path once to stderr so user knows where to find it
 	fmt.Fprintf(os.Stderr, "[yu] Log: %s\n", path)
+}
+
+// yuLogStderr writes to both log file and stderr — for critical messages.
+func yuLogStderr(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	yuLog("%s", msg)
+	fmt.Fprintf(os.Stderr, "[yu] %s\n", msg)
 }
 
 func closeLog() {
