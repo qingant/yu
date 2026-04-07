@@ -12,14 +12,13 @@ Works with Claude Code, Codex, Gemini CLI, or any command.
 
 ```bash
 curl -fsSL https://github.com/qingant/yu/releases/latest/download/yu-darwin-arm64 -o /usr/local/bin/yu && chmod +x /usr/local/bin/yu
-brew install fswatch  # for auto-snapshot
 ```
 
 <details>
 <summary>Build from source</summary>
 
 ```bash
-brew install go fswatch
+brew install go
 git clone https://github.com/qingant/yu.git && cd yu
 go build -o /usr/local/bin/yu ./cmd/yu/
 ```

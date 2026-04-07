@@ -1,10 +1,13 @@
 package snapshot
 
 import (
-	"os/exec"
-	"runtime"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // LogFunc is a callback for logging.
@@ -23,13 +26,13 @@ type Watcher struct {
 	lastSnapshot time.Time
 	stopCh       chan struct{}
 	wg           sync.WaitGroup
-	watchCmd     *exec.Cmd
+	fsWatcher    *fsnotify.Watcher
 }
 
 // NewWatcher creates a behavior-driven snapshot watcher.
 func NewWatcher(s *Snapshotter, quietSeconds, fileThreshold int, logFn LogFunc) *Watcher {
 	if logFn == nil {
-		logFn = func(format string, args ...any) {} // noop
+		logFn = func(format string, args ...any) {}
 	}
 	return &Watcher{
 		snapshotter:   s,
@@ -50,11 +53,20 @@ func (w *Watcher) Start() error {
 		w.lastSnapshot = time.Now()
 	}
 
-	// Start fswatch/inotify process
+	// Start native file watcher
+	var err error
+	w.fsWatcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		w.logFn("Warning: file watcher failed: %v", err)
+		return nil // non-fatal, snapshots still work via pre-command hooks
+	}
+
+	// Add project directory and all subdirectories (excluding .yu and .git)
+	w.addDirRecursive(w.snapshotter.ProjectDir)
+
 	w.wg.Add(1)
 	go w.watchLoop()
 
-	// Start quiet-period checker
 	w.wg.Add(1)
 	go w.quietChecker()
 
@@ -64,17 +76,13 @@ func (w *Watcher) Start() error {
 // Stop terminates the watcher.
 func (w *Watcher) Stop() {
 	close(w.stopCh)
-	// Kill the file watcher process so its stdout.Read unblocks
-	w.mu.Lock()
-	if w.watchCmd != nil && w.watchCmd.Process != nil {
-		w.watchCmd.Process.Kill()
+	if w.fsWatcher != nil {
+		w.fsWatcher.Close()
 	}
-	w.mu.Unlock()
 	w.wg.Wait()
 }
 
 // PreCommand is called before a proxied command executes.
-// It triggers a snapshot if there have been changes since the last one.
 func (w *Watcher) PreCommand(cmdName string) {
 	w.mu.Lock()
 	changes := w.changeCount
@@ -88,47 +96,25 @@ func (w *Watcher) PreCommand(cmdName string) {
 func (w *Watcher) watchLoop() {
 	defer w.wg.Done()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "darwin" {
-		cmd = exec.Command("fswatch",
-			"--recursive",
-			"--exclude", `\.yu/`,
-			"--exclude", `\.git/`,
-			w.snapshotter.ProjectDir,
-		)
-	} else {
-		cmd = exec.Command("inotifywait",
-			"-m", "-r",
-			"--exclude", `(\.yu|\.git)`,
-			"-e", "modify,create,delete,move",
-			"--format", "%w%f",
-			w.snapshotter.ProjectDir,
-		)
-	}
-
-	w.mu.Lock()
-	w.watchCmd = cmd
-	w.mu.Unlock()
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		w.logFn("Warning: file watcher pipe failed: %v", err)
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		w.logFn("Warning: file watcher not available: %v", err)
-		return
-	}
-
-	// Read events — blocks until data or process killed
-	buf := make([]byte, 4096)
 	for {
-		n, err := stdout.Read(buf)
-		if err != nil {
-			return // process killed or pipe closed
-		}
-		if n > 0 {
+		select {
+		case <-w.stopCh:
+			return
+		case event, ok := <-w.fsWatcher.Events:
+			if !ok {
+				return
+			}
+			if w.shouldIgnore(event.Name) {
+				continue
+			}
+
+			// If a new directory is created, watch it too
+			if event.Has(fsnotify.Create) {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					w.addDirRecursive(event.Name)
+				}
+			}
+
 			w.mu.Lock()
 			w.changeCount++
 			w.lastChange = time.Now()
@@ -138,6 +124,12 @@ func (w *Watcher) watchLoop() {
 			if shouldSnap {
 				w.takeSnapshot("threshold")
 			}
+
+		case err, ok := <-w.fsWatcher.Errors:
+			if !ok {
+				return
+			}
+			w.logFn("Warning: file watcher error: %v", err)
 		}
 	}
 }
@@ -178,4 +170,36 @@ func (w *Watcher) takeSnapshot(trigger string) {
 	w.lastSnapshot = time.Now()
 	w.mu.Unlock()
 	w.logFn("Snapshot #%d (%s)", snap.ID, trigger)
+}
+
+// shouldIgnore returns true for paths we don't want to trigger snapshots.
+func (w *Watcher) shouldIgnore(path string) bool {
+	rel, err := filepath.Rel(w.snapshotter.ProjectDir, path)
+	if err != nil {
+		return true
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	for _, p := range parts {
+		if p == ".yu" || p == ".git" {
+			return true
+		}
+	}
+	return false
+}
+
+// addDirRecursive adds a directory and all subdirectories to the watcher.
+func (w *Watcher) addDirRecursive(root string) {
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name == ".yu" || name == ".git" || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			w.fsWatcher.Add(path)
+		}
+		return nil
+	})
 }
