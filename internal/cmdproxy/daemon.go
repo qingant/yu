@@ -178,8 +178,12 @@ func (d *Daemon) buildExecEnv() []string {
 	// Start with the real host environment
 	env := os.Environ()
 
-	// Inject credentials from .yu/env
+	// Inject credentials from .yu/env, expanding ~ to real home
+	home, _ := os.UserHomeDir()
 	for k, v := range d.Env {
+		if strings.Contains(v, "~/") {
+			v = strings.ReplaceAll(v, "~/", home+"/")
+		}
 		env = setExecEnv(env, k, v)
 	}
 
