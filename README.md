@@ -118,7 +118,7 @@ env:
 
 ## Background
 
-Yu implements the credential isolation layer from the [EaaS paper](../papers/) (Section 7.4).
+Yu implements the credential isolation layer from the [Environment as a Service](https://blog.dreambubble.ai/en/posts/environment-as-a-service-agent-as-the-interface) paper (Section 7.4).
 
 ## Name
 
