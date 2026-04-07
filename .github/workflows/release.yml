@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon (M1)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o yu-darwin-arm64 ./cmd/yu/
+
+      - name: Test
+        run: go test ./internal/...
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yu-darwin-arm64

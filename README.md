@@ -9,18 +9,24 @@ Yu is a sandbox for AI coding agents (Claude Code, Codex, Gemini CLI). It lets a
 ## Install
 
 ```bash
-brew install go fswatch  # prerequisites
-go install github.com/qingant/yu/cmd/yu@latest
+curl -fsSL https://github.com/qingant/yu/releases/latest/download/yu-darwin-arm64 -o /usr/local/bin/yu && chmod +x /usr/local/bin/yu
 ```
 
-Or build from source:
+Also install `fswatch` for auto-snapshot file watching:
+```bash
+brew install fswatch
+```
+
+<details>
+<summary>Build from source</summary>
 
 ```bash
+brew install go fswatch
 git clone https://github.com/qingant/yu.git
 cd yu
-go build -o yu ./cmd/yu/
-cp yu /usr/local/bin/
+go build -o /usr/local/bin/yu ./cmd/yu/
 ```
+</details>
 
 ## Quick Start
 
