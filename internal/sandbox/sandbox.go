@@ -33,8 +33,7 @@ var knownAgents = map[string]agentInfo{
 		ConfigFiles: []string{".claude.json"},
 	},
 	"codex": {
-		BypassFlags: []string{"--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"},
-		FlagsAtEnd:  true, // flags must come after subcommand (e.g. codex exec --flags)
+		BypassFlags: []string{"--dangerously-bypass-approvals-and-sandbox"},
 		ConfigDirs:  []string{".codex"},
 	},
 	"gemini": {
