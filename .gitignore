@@ -4,6 +4,13 @@
 /yu
 *.exe
 
+# Certificates
+*.p12
+*.cer
+*.pem
+*.key
+*.csr
+
 # Test artifacts
 *.test
 coverage.out

@@ -11,7 +11,7 @@ Works with Claude Code, Codex, Gemini CLI, or any command.
 ## Install
 
 ```bash
-sudo curl -fsSL https://github.com/qingant/yu/releases/latest/download/yu-darwin-arm64 -o /usr/local/bin/yu && sudo chmod +x /usr/local/bin/yu && sudo codesign --sign - --force /usr/local/bin/yu
+sudo curl -fsSL https://github.com/qingant/yu/releases/latest/download/yu-darwin-arm64 -o /usr/local/bin/yu && sudo chmod +x /usr/local/bin/yu
 ```
 
 Update to latest:

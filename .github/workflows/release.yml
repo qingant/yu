@@ -22,8 +22,40 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o yu-darwin-arm64 ./cmd/yu/
 
+      - name: Import certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERT_PATH
+
+          security create-keychain -p "" $KEYCHAIN_PATH
+          security set-keychain-settings $KEYCHAIN_PATH
+          security unlock-keychain -p "" $KEYCHAIN_PATH
+          security import $CERT_PATH -k $KEYCHAIN_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+
       - name: Sign
-        run: codesign --sign - --force yu-darwin-arm64
+        run: |
+          codesign --sign "Developer ID Application" --options runtime --timestamp --force yu-darwin-arm64
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          zip yu-darwin-arm64.zip yu-darwin-arm64
+          xcrun notarytool submit yu-darwin-arm64.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple yu-darwin-arm64 || true
 
       - name: Test
         run: go test ./internal/...
