@@ -87,9 +87,10 @@ func selfUpdate() error {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	// Remove macOS quarantine flag to prevent Gatekeeper from killing the binary
+	// On macOS: remove quarantine flag and ad-hoc sign to prevent Gatekeeper kill
 	if runtime.GOOS == "darwin" {
 		exec.Command("xattr", "-d", "com.apple.quarantine", tmpFile).Run()
+		exec.Command("codesign", "--sign", "-", "--force", tmpFile).Run()
 	}
 
 	// Atomic replace: rename new over old

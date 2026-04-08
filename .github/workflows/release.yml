@@ -22,6 +22,9 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o yu-darwin-arm64 ./cmd/yu/
 
+      - name: Sign
+        run: codesign --sign - --force yu-darwin-arm64
+
       - name: Test
         run: go test ./internal/...
 
