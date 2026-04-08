@@ -87,9 +87,9 @@ func selfUpdate() error {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	// On macOS: remove quarantine flag and ad-hoc sign to prevent Gatekeeper kill
+	// On macOS: clear download-origin attributes and re-sign to prevent SIGKILL
 	if runtime.GOOS == "darwin" {
-		exec.Command("xattr", "-d", "com.apple.quarantine", tmpFile).Run()
+		exec.Command("xattr", "-c", tmpFile).Run()
 		exec.Command("codesign", "--sign", "-", "--force", tmpFile).Run()
 	}
 
