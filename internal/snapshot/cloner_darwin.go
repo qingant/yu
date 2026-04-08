@@ -11,17 +11,21 @@ import (
 // platformCloner uses APFS clone (cp -c) on macOS for instant COW copies.
 type platformCloner struct{}
 
-func (c *platformCloner) Clone(src, dst string) error {
-	// Use cp -c for APFS clone (instant, COW)
-	// Exclude .yu/ directory from the snapshot to avoid recursive snapshots
-	// and to avoid copying credentials
+// Directories to skip in snapshots — large, recoverable, or irrelevant.
+var skipClone = map[string]bool{
+	".yu": true, ".git": true,
+	"node_modules": true, ".next": true, ".nuxt": true,
+	"__pycache__": true, ".venv": true, "venv": true, ".tox": true,
+	"target": true, "build": true, "dist": true,
+	".gradle": true, ".cache": true, ".turbo": true,
+	".pytest_cache": true, ".mypy_cache": true,
+}
 
-	// Create destination
+func (c *platformCloner) Clone(src, dst string) error {
 	if err := os.MkdirAll(dst, 0755); err != nil {
 		return err
 	}
 
-	// List source entries, skip .yu and .git (git dir can be huge and is recoverable)
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return fmt.Errorf("reading source dir: %w", err)
@@ -29,7 +33,7 @@ func (c *platformCloner) Clone(src, dst string) error {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == ".yu" || name == ".git" {
+		if skipClone[name] {
 			continue
 		}
 
