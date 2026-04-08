@@ -101,18 +101,24 @@ func (s *Snapshotter) List() []Snapshot {
 		info, _ := e.Info()
 		trigger := "unknown"
 		summary := ""
+		created := time.Time{}
 		if meta, err := os.ReadFile(filepath.Join(s.SnapshotDir, e.Name(), ".yu-snapshot-meta")); err == nil {
 			for _, line := range splitLines(string(meta)) {
 				if strings.HasPrefix(line, "trigger=") {
 					trigger = line[8:]
 				} else if strings.HasPrefix(line, "summary=") {
 					summary = line[8:]
+				} else if strings.HasPrefix(line, "time=") {
+					if t, err := time.Parse(time.RFC3339, line[5:]); err == nil {
+						created = t
+					}
 				}
 			}
 		}
-		created := time.Time{}
-		if info != nil {
-			created = info.ModTime()
+		if created.IsZero() {
+			if info != nil {
+				created = info.ModTime()
+			}
 		}
 		snaps = append(snaps, Snapshot{
 			ID:      id,
@@ -144,14 +150,55 @@ func (s *Snapshotter) nextID() int {
 	return snaps[len(snaps)-1].ID + 1
 }
 
+// prune applies a time-bucketed retention policy.
+//
+// Strategy (max 5 snapshots kept):
+//   - Daily bucket  (1 slot): the most recent snapshot aged >= 24h
+//   - Hourly bucket (1 slot): the most recent snapshot aged >= 1h but < 24h
+//   - Recent bucket (up to 3 slots): the N most recent snapshots
+//
+// Any snapshot not selected is deleted. If fewer than 5 exist, nothing is pruned.
 func (s *Snapshotter) prune() {
-	snaps := s.List()
+	snaps := s.List() // sorted by ID ascending
 	if len(snaps) <= s.Keep {
 		return
 	}
-	// Remove oldest
-	for _, snap := range snaps[:len(snaps)-s.Keep] {
-		os.RemoveAll(snap.Path)
+
+	now := time.Now()
+	keep := make(map[int]bool)
+
+	// --- Bucket 1: daily (>= 24h old) — pick the most recent one ---
+	for i := len(snaps) - 1; i >= 0; i-- {
+		age := now.Sub(snaps[i].CreatedAt)
+		if age >= 24*time.Hour {
+			keep[snaps[i].ID] = true
+			break
+		}
+	}
+
+	// --- Bucket 2: hourly (>= 1h old, < 24h) — pick the most recent one ---
+	for i := len(snaps) - 1; i >= 0; i-- {
+		age := now.Sub(snaps[i].CreatedAt)
+		if age >= time.Hour && age < 24*time.Hour && !keep[snaps[i].ID] {
+			keep[snaps[i].ID] = true
+			break
+		}
+	}
+
+	// --- Bucket 3: fill remaining slots with most recent snapshots ---
+	remaining := s.Keep - len(keep)
+	for i := len(snaps) - 1; i >= 0 && remaining > 0; i-- {
+		if !keep[snaps[i].ID] {
+			keep[snaps[i].ID] = true
+			remaining--
+		}
+	}
+
+	// --- Delete everything not kept ---
+	for _, snap := range snaps {
+		if !keep[snap.ID] {
+			os.RemoveAll(snap.Path)
+		}
 	}
 }
 

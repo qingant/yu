@@ -96,7 +96,7 @@ Config lives in `.yu/` (project) and `~/.config/yu/` (global). Invisible to the 
 
 ```yaml
 snapshot:
-  keep: 10
+  keep: 5              # max snapshots; uses time-bucketed retention
   quiet_seconds: 15
   file_threshold: 50
 

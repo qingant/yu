@@ -61,7 +61,7 @@ type CommandsConfig struct {
 func Defaults() *Config {
 	return &Config{
 		Snapshot: SnapshotConfig{
-			Keep:          10,
+			Keep:          5,
 			QuietSeconds:  15,
 			FileThreshold: 50,
 		},
@@ -114,7 +114,7 @@ func Init(dir string) error {
 # See: https://github.com/taoai/yu
 
 snapshot:
-  keep: 10
+  keep: 5              # max snapshots; uses time-bucketed retention
   quiet_seconds: 15
   file_threshold: 50
 
