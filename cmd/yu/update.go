@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 
@@ -84,6 +85,11 @@ func selfUpdate() error {
 	if err := os.Chmod(tmpFile, 0755); err != nil {
 		os.Remove(tmpFile)
 		return fmt.Errorf("chmod: %w", err)
+	}
+
+	// Remove macOS quarantine flag to prevent Gatekeeper from killing the binary
+	if runtime.GOOS == "darwin" {
+		exec.Command("xattr", "-d", "com.apple.quarantine", tmpFile).Run()
 	}
 
 	// Atomic replace: rename new over old
