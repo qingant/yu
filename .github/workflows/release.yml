@@ -22,26 +22,31 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o yu-darwin-arm64 ./cmd/yu/
 
-      - name: Import certificate
+      - name: Import certificate and sign
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_KEY: ${{ secrets.APPLE_SIGNING_KEY }}
+          APPLE_SIGNING_CERT: ${{ secrets.APPLE_SIGNING_CERT }}
         run: |
-          CERT_PATH=$RUNNER_TEMP/cert.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          # Decode key and cert
+          echo -n "$APPLE_SIGNING_KEY" | base64 --decode > /tmp/dev.key
+          echo -n "$APPLE_SIGNING_CERT" | base64 --decode > /tmp/dev.cer.pem
 
-          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERT_PATH
+          # Build p12 on the runner itself (avoids openssl version mismatch)
+          security create-keychain -p "" build.keychain-db
+          security set-keychain-settings build.keychain-db
+          security unlock-keychain -p "" build.keychain-db
 
-          security create-keychain -p "" $KEYCHAIN_PATH
-          security set-keychain-settings $KEYCHAIN_PATH
-          security unlock-keychain -p "" $KEYCHAIN_PATH
-          security import $CERT_PATH -k $KEYCHAIN_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
-          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+          openssl pkcs12 -export -out /tmp/cert.p12 -inkey /tmp/dev.key -in /tmp/dev.cer.pem -password pass:build
 
-      - name: Sign
-        run: |
+          security import /tmp/cert.p12 -k build.keychain-db -P build -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "" build.keychain-db
+          security list-keychains -d user -s build.keychain-db login.keychain-db
+
+          # Sign
           codesign --sign "Developer ID Application" --options runtime --timestamp --force yu-darwin-arm64
+
+          # Cleanup
+          rm -f /tmp/dev.key /tmp/dev.cer.pem /tmp/cert.p12
 
       - name: Notarize
         env:
