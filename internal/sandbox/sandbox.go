@@ -212,8 +212,37 @@ func (s *Sandbox) cleanup() {
 	if s.cmdDaemon != nil {
 		s.cmdDaemon.Stop()
 	}
+
+	// Check for unsaved data in fake HOME that would be lost
+	s.checkOrphanedFiles()
+
 	yuLog("Sandbox %s cleaned up", s.ID)
 	os.RemoveAll(s.TmpDir)
+}
+
+// checkOrphanedFiles warns about files in fake HOME that aren't symlinks.
+// These were created by the agent but will be lost when the sandbox exits.
+func (s *Sandbox) checkOrphanedFiles() {
+	fakeHome := filepath.Join(s.TmpDir, "home")
+	entries, err := os.ReadDir(fakeHome)
+	if err != nil {
+		return
+	}
+
+	var orphaned []string
+	for _, e := range entries {
+		path := filepath.Join(fakeHome, e.Name())
+		// If it's a symlink, it points to real storage — safe
+		if target, err := os.Readlink(path); err == nil && target != "" {
+			continue
+		}
+		orphaned = append(orphaned, e.Name())
+	}
+
+	if len(orphaned) > 0 {
+		yuLogStderr("Warning: files created in sandbox HOME will be lost: %s", strings.Join(orphaned, ", "))
+		yuLogStderr("Consider adding these to the agent's ConfigDirs/ConfigFiles in yu")
+	}
 }
 
 // injectAgentFlags adds bypass flags for known agents.
