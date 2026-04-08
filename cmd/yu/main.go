@@ -17,6 +17,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is set at build time via -ldflags.
+var version = "dev"
+
 // Known AI coding agent CLIs.
 var knownAgentCLIs = []struct {
 	Name    string
@@ -94,6 +97,8 @@ func main() {
 	rootCmd.AddCommand(snapshotsCmd())
 	rootCmd.AddCommand(rollbackCmd())
 	rootCmd.AddCommand(shimCmd())
+	rootCmd.AddCommand(versionCmd())
+	rootCmd.AddCommand(updateCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -291,6 +296,16 @@ func rollbackCmd() *cobra.Command {
 			}
 			fmt.Printf("Rolled back to snapshot #%d\n", id)
 			return nil
+		},
+	}
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print yu version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println("yu " + version)
 		},
 	}
 }

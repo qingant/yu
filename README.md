@@ -14,6 +14,11 @@ Works with Claude Code, Codex, Gemini CLI, or any command.
 curl -fsSL https://github.com/qingant/yu/releases/latest/download/yu-darwin-arm64 -o /usr/local/bin/yu && chmod +x /usr/local/bin/yu
 ```
 
+Update to latest:
+```bash
+yu update
+```
+
 <details>
 <summary>Build from source</summary>
 
