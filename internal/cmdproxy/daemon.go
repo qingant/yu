@@ -256,10 +256,8 @@ func (d *Daemon) validateCwd(cwd string) error {
 		return fmt.Errorf("empty working directory")
 	}
 	// Guard against null-byte injection (would truncate the path on some systems).
-	for i := 0; i < len(cwd); i++ {
-		if cwd[i] == 0 {
-			return fmt.Errorf("working directory contains null byte")
-		}
+	if strings.ContainsRune(cwd, 0) {
+		return fmt.Errorf("working directory contains null byte")
 	}
 	// Restrict to the project directory tree so that delegated commands cannot
 	// operate on arbitrary parts of the filesystem.
