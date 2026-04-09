@@ -3,8 +3,14 @@ package cmdproxy
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 )
+
+// maxMessageSize caps how many bytes ReadMessage will allocate for a single
+// message, preventing a malicious (or buggy) sender from triggering a ~4 GiB
+// allocation via the 4-byte length prefix.
+const maxMessageSize = 64 * 1024 * 1024 // 64 MiB
 
 // Request is sent from shim to daemon.
 type Request struct {
@@ -44,6 +50,9 @@ func ReadMessage(r io.Reader, v any) error {
 		return err
 	}
 	length := binary.BigEndian.Uint32(lenBuf)
+	if length > maxMessageSize {
+		return fmt.Errorf("message too large: %d bytes (max %d)", length, maxMessageSize)
+	}
 	data := make([]byte, length)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return err

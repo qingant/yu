@@ -85,6 +85,12 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Validate Cwd: must be non-empty, free of null bytes, and within the project dir.
+	if err := d.validateCwd(req.Cwd); err != nil {
+		d.sendError(conn, fmt.Sprintf("invalid cwd: %v", err), 1)
+		return
+	}
+
 	// Call pre-command hook (e.g., snapshot)
 	if d.PreCommandHook != nil {
 		d.PreCommandHook(req.Command)
@@ -240,6 +246,29 @@ func (d *Daemon) generateExecProfile() string {
 	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", yuDir))
 
 	return sb.String()
+}
+
+// validateCwd checks that the requested working directory is safe to use:
+// it must be non-empty, contain no null bytes, and must be either the project
+// directory or a subdirectory of it.
+func (d *Daemon) validateCwd(cwd string) error {
+	if cwd == "" {
+		return fmt.Errorf("empty working directory")
+	}
+	// Guard against null-byte injection (would truncate the path on some systems).
+	for i := 0; i < len(cwd); i++ {
+		if cwd[i] == 0 {
+			return fmt.Errorf("working directory contains null byte")
+		}
+	}
+	// Restrict to the project directory tree so that delegated commands cannot
+	// operate on arbitrary parts of the filesystem.
+	clean := filepath.Clean(cwd)
+	projectClean := filepath.Clean(d.ProjectDir)
+	if clean != projectClean && !strings.HasPrefix(clean, projectClean+string(filepath.Separator)) {
+		return fmt.Errorf("working directory %q is outside project dir %q", cwd, d.ProjectDir)
+	}
+	return nil
 }
 
 // extractPaths finds file paths in a string value.

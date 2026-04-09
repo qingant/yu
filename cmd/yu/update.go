@@ -123,6 +123,9 @@ func fetchLatestRelease() (*ghRelease, error) {
 	return &rel, nil
 }
 
+// maxUpdateSize is the maximum binary size accepted during self-update (200 MiB).
+const maxUpdateSize = 200 * 1024 * 1024
+
 func downloadFile(url, dst string) error {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -140,6 +143,6 @@ func downloadFile(url, dst string) error {
 	}
 	defer f.Close()
 
-	_, err = io.Copy(f, resp.Body)
+	_, err = io.Copy(f, io.LimitReader(resp.Body, maxUpdateSize))
 	return err
 }

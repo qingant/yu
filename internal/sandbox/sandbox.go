@@ -404,6 +404,8 @@ func (s *Sandbox) configureKeyReplacements() {
 
 func randomID() string {
 	b := make([]byte, 4)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("yu: crypto/rand unavailable: %v", err))
+	}
 	return hex.EncodeToString(b)
 }

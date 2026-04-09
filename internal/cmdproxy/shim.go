@@ -5,7 +5,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 )
+
+// safeCommandName matches command names that are safe to embed in a shell script:
+// only letters, digits, hyphens, underscores, and dots – no shell metacharacters.
+var safeCommandName = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // Shim scripts call `yu shim <socket> <cmd> [args...]` — same binary, no separate yu-shim.
 const shimScript = `#!/bin/sh
@@ -18,6 +23,9 @@ func GenerateShims(shimsDir, socketPath, yuBin string, commands []string) error 
 	os.MkdirAll(shimsDir, 0755)
 
 	for _, cmd := range commands {
+		if !safeCommandName.MatchString(cmd) {
+			return fmt.Errorf("unsafe command name %q: only letters, digits, hyphens, underscores, and dots are allowed", cmd)
+		}
 		shimPath := filepath.Join(shimsDir, cmd)
 		content := fmt.Sprintf(shimScript, yuBin, socketPath, cmd)
 		if err := os.WriteFile(shimPath, []byte(content), 0755); err != nil {
