@@ -238,16 +238,6 @@ func configCmd() *cobra.Command {
 		},
 	})
 
-	// symlink subcommand — add a HOME path to symlink into sandbox
-	cmd.AddCommand(&cobra.Command{
-		Use:   "symlink <path>",
-		Short: "Add a HOME-relative path to symlink into sandbox (e.g. .wrangler)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return config.AddHomeSymlink(resolveDir(nil), args[0])
-		},
-	})
-
 	return cmd
 }
 

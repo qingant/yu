@@ -15,7 +15,6 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Commands CommandsConfig `yaml:"commands"`
 	Env      EnvConfig      `yaml:"env"`
-	Sandbox  SandboxConfig  `yaml:"sandbox"`
 
 	// Credentials holds key-value pairs loaded from .yu/env
 	// Injected into the command proxy executor, never into the sandbox.
@@ -29,12 +28,6 @@ type EnvConfig struct {
 	// Keep is a list of extra env var names to pass through to the sandbox
 	// (in addition to the built-in whitelist).
 	Keep []string `yaml:"keep"`
-}
-
-type SandboxConfig struct {
-	// HomeSymlinks is a list of paths (relative to real HOME) to symlink
-	// into the sandbox HOME. Added on top of the built-in defaults.
-	HomeSymlinks []string `yaml:"home_symlinks"`
 }
 
 type NetworkConfig struct {
@@ -230,23 +223,6 @@ func RemoveInjectRule(dir, path string) error {
 	}
 
 	cfg.Network.Inject = remaining
-	return writeYAML(configPath, cfg)
-}
-
-// AddHomeSymlink adds a HOME-relative path to the sandbox symlink list.
-func AddHomeSymlink(dir, path string) error {
-	configPath := filepath.Join(dir, ".yu", "config.yaml")
-	cfg := Defaults()
-	loadYAML(configPath, cfg)
-
-	for _, existing := range cfg.Sandbox.HomeSymlinks {
-		if existing == path {
-			return fmt.Errorf("symlink %q already configured", path)
-		}
-	}
-
-	cfg.Sandbox.HomeSymlinks = append(cfg.Sandbox.HomeSymlinks, path)
-	fmt.Printf("Added HOME symlink: ~/%s\n", path)
 	return writeYAML(configPath, cfg)
 }
 

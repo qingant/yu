@@ -26,29 +26,6 @@ type agentInfo struct {
 	ConfigFiles []string // relative to $HOME, individual files get symlinked
 }
 
-// Common tool config dirs (relative to HOME) that always get symlinked.
-// These are tools agents commonly invoke that need their config to work.
-var commonHomeSymlinks = []string{
-	// Node.js / npm
-	".npm",
-	".npmrc",
-	".nvm",
-	// Cloudflare
-	".wrangler",
-	".config/.wrangler",
-	// Rust
-	".cargo",
-	".rustup",
-	// Python
-	".pyenv",
-	".local/share/pipx",
-	// Go
-	"go",
-	// General
-	".config/configstore",
-	".gitconfig",
-}
-
 var knownAgents = map[string]agentInfo{
 	"claude": {
 		BypassFlags: []string{"--dangerously-skip-permissions"},
@@ -191,44 +168,29 @@ func (s *Sandbox) setup() error {
 		}
 	}
 
-	// Symlink config dirs into sandbox HOME:
-	// 1. Agent-specific (e.g. .claude/, .codex/)
-	// 2. Common tools (e.g. .npm, .wrangler, .cargo)
-	// 3. User-configured extras from .yu/config.yaml sandbox.home_symlinks
+	// Symlink agent config dirs and files from real HOME into sandbox HOME
 	realHome, _ := os.UserHomeDir()
 	fakeHome := filepath.Join(s.TmpDir, "home")
-
-	symlink := func(relPath string) {
-		src := filepath.Join(realHome, relPath)
-		if _, err := os.Stat(src); err != nil {
-			return
-		}
-		dst := filepath.Join(fakeHome, relPath)
-		if _, err := os.Lstat(dst); err == nil {
-			return // already exists
-		}
-		os.MkdirAll(filepath.Dir(dst), 0700)
-		os.Symlink(src, dst)
-	}
-
-	// Agent-specific
-	if info := s.agentInfo(); info != nil {
+	info := s.agentInfo()
+	if info != nil {
 		for _, dir := range info.ConfigDirs {
-			symlink(dir)
+			src := filepath.Join(realHome, dir)
+			if _, err := os.Stat(src); err != nil {
+				continue
+			}
+			dst := filepath.Join(fakeHome, dir)
+			os.MkdirAll(filepath.Dir(dst), 0700)
+			os.Symlink(src, dst)
 		}
 		for _, file := range info.ConfigFiles {
-			symlink(file)
+			src := filepath.Join(realHome, file)
+			if _, err := os.Stat(src); err != nil {
+				continue
+			}
+			dst := filepath.Join(fakeHome, file)
+			os.MkdirAll(filepath.Dir(dst), 0700)
+			os.Symlink(src, dst)
 		}
-	}
-
-	// Common tools
-	for _, path := range commonHomeSymlinks {
-		symlink(path)
-	}
-
-	// User-configured
-	for _, path := range s.Config.Sandbox.HomeSymlinks {
-		symlink(path)
 	}
 
 	return nil
