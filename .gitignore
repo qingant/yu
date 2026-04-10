@@ -2,6 +2,7 @@
 
 # Binary
 /yu
+yu *
 *.exe
 
 # Certificates
