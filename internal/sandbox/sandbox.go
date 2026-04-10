@@ -41,6 +41,9 @@ var knownAgents = map[string]agentInfo{
 		BypassFlags: nil,
 		ConfigDirs:  []string{".config/gemini"},
 	},
+	"yu": {
+		// Built-in agent — no bypass flags, no config dirs needed
+	},
 }
 
 // Sandbox manages the lifecycle of a sandboxed agent process.
@@ -360,7 +363,11 @@ func (s *Sandbox) configureKeyReplacements() {
 		var replacements []netproxy.KeyReplacement
 		var keyNames []string
 		for _, keyEnv := range route.KeyEnvs {
+			// Check environment first, then .yu/env credentials
 			realKey := os.Getenv(keyEnv)
+			if realKey == "" {
+				realKey = s.Config.Credentials[keyEnv]
+			}
 			if realKey == "" {
 				continue
 			}
@@ -373,14 +380,22 @@ func (s *Sandbox) configureKeyReplacements() {
 			keyNames = append(keyNames, keyEnv)
 		}
 
-		// Only proxy when user has a custom BASE_URL.
-		// If using the official endpoint, let the agent handle its own auth (OAuth).
-		customBase := os.Getenv(route.BaseEnv)
-		if customBase == "" || len(replacements) == 0 {
+		if len(replacements) == 0 {
 			continue
 		}
 
+		// Determine upstream: custom BASE_URL → default URL (built-in agent only)
+		// External agents only get proxied when user has set a custom BASE_URL,
+		// so they can use their own OAuth on the official endpoint.
+		// The built-in agent always goes through the proxy.
+		customBase := os.Getenv(route.BaseEnv)
 		upstream := customBase
+		if upstream == "" {
+			if !s.isBuiltinAgent() {
+				continue
+			}
+			upstream = route.DefaultURL
+		}
 
 		// Build force header: use the first real key found
 		forceHeaders := map[string]string{}
@@ -432,6 +447,15 @@ func (s *Sandbox) configureKeyReplacements() {
 		yuLog("API proxy (config): %s → %s%s → %s",
 			rule.Path, s.apiAddr, rule.Path, rule.Upstream)
 	}
+}
+
+// isBuiltinAgent returns true if the command is the built-in yu agent-loop.
+func (s *Sandbox) isBuiltinAgent() bool {
+	if len(s.Command) < 2 {
+		return false
+	}
+	base := filepath.Base(s.Command[0])
+	return base == "yu" && s.Command[1] == "agent-loop"
 }
 
 func randomID() string {

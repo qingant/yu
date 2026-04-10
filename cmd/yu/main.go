@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/taoai/yu/internal/agent"
 	"github.com/taoai/yu/internal/cloud"
 	"github.com/taoai/yu/internal/cmdproxy"
 	"github.com/taoai/yu/internal/config"
@@ -37,6 +38,7 @@ func main() {
 		configFile string
 		servePort  int
 		allowNet   []string
+		modelFlag  string
 	)
 
 	rootCmd := &cobra.Command{
@@ -81,6 +83,14 @@ func main() {
 			if servePort > 0 {
 				cfg.Server.Port = servePort
 			}
+			if modelFlag != "" {
+				cfg.Agent.Model = modelFlag
+			}
+
+			// Pass model to built-in agent via environment
+			if cfg.Agent.Model != "" && len(command) >= 2 && command[0] == "yu" && command[1] == "agent-loop" {
+				os.Setenv("YU_MODEL", cfg.Agent.Model)
+			}
 
 			sb, err := sandbox.New(absDir, command, cfg)
 			if err != nil {
@@ -93,6 +103,7 @@ func main() {
 	rootCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file (default: .yu/config.yaml)")
 	rootCmd.Flags().IntVar(&servePort, "serve", 0, "enable server mode on this port")
 	rootCmd.Flags().StringSliceVar(&allowNet, "allow-net", nil, "additional allowed network domains")
+	rootCmd.Flags().StringVar(&modelFlag, "model", "", "model to use for built-in agent (e.g. claude-sonnet-4-20250514, gpt-4o)")
 
 	rootCmd.AddCommand(configCmd())
 	rootCmd.AddCommand(snapshotsCmd())
@@ -101,6 +112,7 @@ func main() {
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(updateCmd())
 	rootCmd.AddCommand(pairCmd())
+	rootCmd.AddCommand(agentLoopCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -108,13 +120,19 @@ func main() {
 }
 
 // detectAndPrompt scans for installed agent CLIs and asks the user which to run.
+// The built-in Yu Agent is always available as the first option.
 func detectAndPrompt() ([]string, error) {
 	type found struct {
 		binary  string
 		display string
 		path    string
+		builtin bool
 	}
-	var available []found
+
+	// Built-in agent is always first
+	available := []found{
+		{binary: "yu", display: "Yu Agent (built-in)", path: "built-in", builtin: true},
+	}
 
 	for _, agent := range knownAgentCLIs {
 		if path, err := exec.LookPath(agent.Binary); err == nil {
@@ -126,17 +144,14 @@ func detectAndPrompt() ([]string, error) {
 		}
 	}
 
-	if len(available) == 0 {
-		return nil, fmt.Errorf("no AI agents found in PATH.\nInstall one of: claude, codex, gemini\nOr specify a command: yu . -- <command>")
-	}
-
-	// Only one agent — just use it
+	// Only built-in agent — just use it
 	if len(available) == 1 {
-		fmt.Printf("[yu] Detected %s (%s)\n", available[0].display, available[0].path)
-		return []string{available[0].binary}, nil
+		fmt.Println("[yu] Starting Yu Agent")
+		yuBin, _ := os.Executable()
+		return []string{yuBin, "agent-loop"}, nil
 	}
 
-	fmt.Println("[yu] Detected agents:")
+	fmt.Println("[yu] Available agents:")
 	for i, a := range available {
 		fmt.Printf("  %d) %s (%s)\n", i+1, a.display, a.path)
 	}
@@ -156,7 +171,22 @@ func detectAndPrompt() ([]string, error) {
 		}
 	}
 
-	return []string{available[choice-1].binary}, nil
+	selected := available[choice-1]
+	if selected.builtin {
+		yuBin, _ := os.Executable()
+		return []string{yuBin, "agent-loop"}, nil
+	}
+	return []string{selected.binary}, nil
+}
+
+func agentLoopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "agent-loop",
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			agent.Main()
+		},
+	}
 }
 
 func configCmd() *cobra.Command {

@@ -15,6 +15,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Commands CommandsConfig `yaml:"commands"`
 	Env      EnvConfig      `yaml:"env"`
+	Agent    AgentConfig    `yaml:"agent"`
 
 	// Credentials holds key-value pairs loaded from .yu/env
 	// Injected into the command proxy executor, never into the sandbox.
@@ -22,6 +23,12 @@ type Config struct {
 
 	// ProjectDir is the resolved project directory path.
 	ProjectDir string `yaml:"-"`
+}
+
+type AgentConfig struct {
+	Model       string `yaml:"model"`        // LLM model name (default: claude-sonnet-4-20250514)
+	MaxTokens   int    `yaml:"max_tokens"`    // max response tokens (default: 8192)
+	BashTimeout int    `yaml:"bash_timeout"`  // bash tool timeout in seconds (default: 120)
 }
 
 type EnvConfig struct {
