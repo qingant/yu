@@ -15,7 +15,7 @@ type platformCloner struct {
 
 // Directories to always skip by name (any level).
 var skipClone = map[string]bool{
-	".yu": true, ".git": true,
+	".git": true,
 	"node_modules": true, ".next": true, ".nuxt": true,
 	"__pycache__": true, ".venv": true, "venv": true, ".tox": true,
 	"target": true, "build": true, "dist": true,

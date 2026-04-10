@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/taoai/yu/internal/config"
 )
 
 // Snapshot represents a point-in-time snapshot of the project directory.
@@ -37,7 +39,7 @@ type Cloner interface {
 func New(projectDir string, keep int, excludes map[string]bool) *Snapshotter {
 	return &Snapshotter{
 		ProjectDir:  projectDir,
-		SnapshotDir: filepath.Join(projectDir, ".yu", "snapshots"),
+		SnapshotDir: filepath.Join(config.WorkspaceDir(projectDir), "snapshots"),
 		Keep:        keep,
 		cloner:      &platformCloner{projectDir: projectDir, excludes: excludes},
 	}

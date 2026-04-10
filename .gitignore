@@ -1,5 +1,3 @@
-.yu/
-
 # Binary
 /yu
 yu *
@@ -18,3 +16,4 @@ coverage.out
 
 # OS
 .DS_Store
+.yu/

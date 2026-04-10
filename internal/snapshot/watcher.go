@@ -187,7 +187,7 @@ func (w *Watcher) shouldIgnore(path string) bool {
 	}
 	parts := strings.Split(rel, string(os.PathSeparator))
 	for _, p := range parts {
-		if p == ".yu" || p == ".git" {
+		if p == ".git" {
 			return true
 		}
 	}
@@ -196,7 +196,7 @@ func (w *Watcher) shouldIgnore(path string) bool {
 
 // Directories to skip when adding watchers (large or irrelevant).
 var skipDirs = map[string]bool{
-	".yu": true, ".git": true, "node_modules": true,
+	".git": true, "node_modules": true,
 	".next": true, ".nuxt": true, "__pycache__": true,
 	".venv": true, "venv": true, ".tox": true,
 	"target": true, "build": true, "dist": true,

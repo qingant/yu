@@ -30,10 +30,8 @@ func TestGenerateExecProfile(t *testing.T) {
 		t.Error("profile should have allow default")
 	}
 
-	// Should deny .yu/ config dir
-	if !strings.Contains(profile, filepath.Join(projectDir, ".yu")) {
-		t.Error("profile should deny .yu/ config dir")
-	}
+	// Config is now in ~/.yu/workspaces/, not in project dir
+	// So no .yu deny rule needed in profile
 
 	t.Logf("Generated profile:\n%s", profile)
 }

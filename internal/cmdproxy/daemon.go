@@ -224,20 +224,14 @@ func (d *Daemon) wrapWithSandbox(realCmd string, args []string) (string, []strin
 // then allow back a single key file. Delegated commands need credential
 // files to function (git needs SSH keys, aws needs config).
 //
-// Current strategy: allow default + deny only .yu/ config dir.
+// Current strategy: allow default.
+// Config is no longer in project dir (moved to ~/.yu/workspaces/).
 // Credential file access will be guarded by AI intent detection (future).
 func (d *Daemon) generateExecProfile() string {
 	var sb strings.Builder
 
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n\n")
-
-	// Deny .yu/ config dir — contains credentials in env file.
-	// This is safe to deny because no delegated command needs it.
-	yuDir := filepath.Join(d.ProjectDir, ".yu")
-	sb.WriteString(fmt.Sprintf("; Deny .yu/ config (contains credentials)\n"))
-	sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", yuDir))
-	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", yuDir))
 
 	return sb.String()
 }

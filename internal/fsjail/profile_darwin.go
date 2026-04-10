@@ -53,12 +53,6 @@ func (d *DarwinGenerator) Generate(p Profile) (string, error) {
 		}
 	}
 
-	// Deny .yu/ config directory inside the project
-	yuDir := filepath.Join(p.ProjectDir, ".yu")
-	sb.WriteString(fmt.Sprintf("\n; Yu config directory — contains credentials\n"))
-	sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", yuDir))
-	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", yuDir))
-
 	// Write profile to temp file
 	profilePath := filepath.Join(p.TmpDir, "sandbox.sb")
 	if err := os.WriteFile(profilePath, []byte(sb.String()), 0600); err != nil {

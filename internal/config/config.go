@@ -75,10 +75,13 @@ func Defaults() *Config {
 	}
 }
 
-// Load merges global (~/.config/yu/) and project (.yu/) config.
+// Load merges global (~/.config/yu/) and workspace (~/.yu/workspaces/<slug>/) config.
 func Load(projectDir string, configFile string) (*Config, error) {
 	cfg := Defaults()
 	cfg.ProjectDir = projectDir
+
+	// Migrate old .yu/ in project dir to new location
+	MigrateIfNeeded(projectDir)
 
 	// Load global config
 	globalDir := globalConfigDir()
@@ -88,26 +91,27 @@ func Load(projectDir string, configFile string) (*Config, error) {
 		cfg.Credentials[k] = v
 	}
 
-	// Load project config
-	projectYuDir := filepath.Join(projectDir, ".yu")
+	// Load workspace config
+	wsDir := WorkspaceDir(projectDir)
 	if configFile != "" {
 		loadYAML(configFile, cfg)
 	} else {
-		loadYAML(filepath.Join(projectYuDir, "config.yaml"), cfg)
+		loadYAML(filepath.Join(wsDir, "config.yaml"), cfg)
 	}
-	projectEnv, _ := loadEnvFile(filepath.Join(projectYuDir, "env"))
-	for k, v := range projectEnv {
+	wsEnv, _ := loadEnvFile(filepath.Join(wsDir, "env"))
+	for k, v := range wsEnv {
 		cfg.Credentials[k] = v
 	}
 
 	return cfg, nil
 }
 
-// Init creates .yu/ directory with template files in the given directory.
+// Init creates workspace config directory with template files.
 func Init(dir string) error {
-	yuDir := filepath.Join(dir, ".yu")
+	absDir, _ := filepath.Abs(dir)
+	yuDir := WorkspaceDir(absDir)
 	if err := os.MkdirAll(yuDir, 0700); err != nil {
-		return fmt.Errorf("creating .yu/: %w", err)
+		return fmt.Errorf("creating workspace dir: %w", err)
 	}
 
 	// Template config.yaml
@@ -123,7 +127,7 @@ snapshot:
 
 # API proxy routes — inject credentials for specific endpoints
 # Agent traffic to these is routed through a local proxy that adds headers.
-# Header values support ${VAR} expansion from .yu/env.
+# Header values support ${VAR} expansion from env file.
 # network:
 #   inject:
 #     - upstream: "https://internal-api.company.com"
@@ -156,10 +160,7 @@ snapshot:
 		}
 	}
 
-	// Add to .gitignore if present
-	addToGitignore(dir)
-
-	fmt.Printf("Initialized .yu/ in %s\n", dir)
+	fmt.Printf("Initialized workspace config at %s\n", yuDir)
 	return nil
 }
 
@@ -171,8 +172,10 @@ func Set(key, value string, global bool) error {
 		os.MkdirAll(dir, 0700)
 		envPath = filepath.Join(dir, "env")
 	} else {
-		envPath = filepath.Join(".yu", "env")
-		os.MkdirAll(".yu", 0700)
+		cwd, _ := os.Getwd()
+		wsDir := WorkspaceDir(cwd)
+		os.MkdirAll(wsDir, 0700)
+		envPath = filepath.Join(wsDir, "env")
 	}
 
 	env, _ := loadEnvFile(envPath)
@@ -186,7 +189,7 @@ func Set(key, value string, global bool) error {
 
 // AddInjectRule adds an inject rule to the project config.
 func AddInjectRule(dir, upstream, path string, headers map[string]string) error {
-	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	configPath := filepath.Join(WorkspaceDir(dir), "config.yaml")
 	cfg := Defaults()
 	loadYAML(configPath, cfg)
 
@@ -208,7 +211,7 @@ func AddInjectRule(dir, upstream, path string, headers map[string]string) error 
 
 // RemoveInjectRule removes an inject rule by path prefix.
 func RemoveInjectRule(dir, path string) error {
-	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	configPath := filepath.Join(WorkspaceDir(dir), "config.yaml")
 	cfg := Defaults()
 	loadYAML(configPath, cfg)
 
@@ -231,7 +234,7 @@ func RemoveInjectRule(dir, path string) error {
 
 // SaveSnapshotExcludes persists the exclude list to .yu/config.yaml.
 func SaveSnapshotExcludes(dir string, excludes []string) {
-	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	configPath := filepath.Join(WorkspaceDir(dir), "config.yaml")
 	cfg := Defaults()
 	loadYAML(configPath, cfg)
 	cfg.Snapshot.Exclude = excludes
@@ -240,7 +243,7 @@ func SaveSnapshotExcludes(dir string, excludes []string) {
 
 // AddIntercept adds a command to the intercept list.
 func AddIntercept(dir, command string) error {
-	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	configPath := filepath.Join(WorkspaceDir(dir), "config.yaml")
 	cfg := Defaults()
 	loadYAML(configPath, cfg)
 
@@ -257,7 +260,7 @@ func AddIntercept(dir, command string) error {
 
 // RemoveIntercept removes a command from the intercept list.
 func RemoveIntercept(dir, command string) error {
-	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	configPath := filepath.Join(WorkspaceDir(dir), "config.yaml")
 	cfg := Defaults()
 	loadYAML(configPath, cfg)
 
@@ -320,29 +323,6 @@ func loadYAML(path string, cfg *Config) {
 		return // file doesn't exist, skip
 	}
 	yaml.Unmarshal(data, cfg)
-}
-
-func addToGitignore(dir string) {
-	gitignorePath := filepath.Join(dir, ".gitignore")
-	content, _ := os.ReadFile(gitignorePath)
-
-	// Check if .yu/ is already in .gitignore
-	for _, line := range splitLines(string(content)) {
-		if line == ".yu/" || line == ".yu" {
-			return
-		}
-	}
-
-	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	if len(content) > 0 && content[len(content)-1] != '\n' {
-		f.WriteString("\n")
-	}
-	f.WriteString(".yu/\n")
 }
 
 func splitLines(s string) []string {

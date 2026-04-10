@@ -96,6 +96,7 @@ func (s *Sandbox) Run() error {
 		os.Exit(1)
 	}()
 
+	yuLogStderr("Config: %s", config.WorkspaceDir(s.ProjectDir))
 	yuLogStderr("Starting sandbox %s", s.ID)
 
 	// Start API proxy
