@@ -35,7 +35,7 @@ func (c *platformCloner) Clone(src, dst string) error {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if skipClone[name] || c.excludes[name] {
+		if strings.HasPrefix(name, ".") || skipClone[name] || c.excludes[name] {
 			continue
 		}
 

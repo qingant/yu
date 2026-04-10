@@ -34,7 +34,7 @@ func ScanAndPrompt(projectDir string, thresholdMB int, existingExcludes []string
 			continue
 		}
 		name := entry.Name()
-		if excluded[name] {
+		if strings.HasPrefix(name, ".") || excluded[name] {
 			continue
 		}
 		sizeMB := dirSizeMB(filepath.Join(projectDir, name))
