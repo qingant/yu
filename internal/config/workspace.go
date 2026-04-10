@@ -1,8 +1,6 @@
 package config
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,23 +36,24 @@ func MigrateIfNeeded(projectDir string) {
 }
 
 // slugify turns an absolute path into a filesystem-safe directory name.
-// Uses a short hash + readable suffix for uniqueness + readability.
-// e.g. /Users/tao/projects/foo → "foo-a1b2c3d4"
+// Full path, lowercase, non-alphanumeric replaced with -.
+// e.g. /Users/tao/projects/foo → "users-tao-projects-foo"
 func slugify(path string) string {
-	// Get the last component for readability
-	base := filepath.Base(path)
-	// Hash the full path for uniqueness
-	h := sha256.Sum256([]byte(path))
-	short := hex.EncodeToString(h[:4])
-	// Clean up base name
-	base = strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+	s := strings.ToLower(path)
+	s = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
 			return r
 		}
 		return '-'
-	}, base)
-	if base == "" {
-		base = "root"
+	}, s)
+	// Trim leading/trailing dashes
+	s = strings.Trim(s, "-")
+	// Collapse multiple dashes
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
 	}
-	return base + "-" + short
+	if s == "" {
+		s = "root"
+	}
+	return s
 }
