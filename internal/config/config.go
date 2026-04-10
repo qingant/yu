@@ -44,9 +44,11 @@ type InjectRule struct {
 }
 
 type SnapshotConfig struct {
-	Keep         int `yaml:"keep"`
-	QuietSeconds int `yaml:"quiet_seconds"`
-	FileThreshold int `yaml:"file_threshold"`
+	Keep            int      `yaml:"keep"`
+	QuietSeconds    int      `yaml:"quiet_seconds"`
+	FileThreshold   int      `yaml:"file_threshold"`
+	Exclude         []string `yaml:"exclude"`          // dirs to skip in snapshots
+	SizeThresholdMB int      `yaml:"size_threshold_mb"` // prompt user about dirs larger than this
 }
 
 type ServerConfig struct {
@@ -61,9 +63,10 @@ type CommandsConfig struct {
 func Defaults() *Config {
 	return &Config{
 		Snapshot: SnapshotConfig{
-			Keep:          5,
-			QuietSeconds:  15,
-			FileThreshold: 50,
+			Keep:            5,
+			QuietSeconds:    15,
+			FileThreshold:   50,
+			SizeThresholdMB: 500,
 		},
 		Commands: CommandsConfig{
 			Intercept: []string{"git", "ssh", "gh", "aws", "scp", "wrangler", "yu"},
@@ -224,6 +227,15 @@ func RemoveInjectRule(dir, path string) error {
 
 	cfg.Network.Inject = remaining
 	return writeYAML(configPath, cfg)
+}
+
+// SaveSnapshotExcludes persists the exclude list to .yu/config.yaml.
+func SaveSnapshotExcludes(dir string, excludes []string) {
+	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	cfg := Defaults()
+	loadYAML(configPath, cfg)
+	cfg.Snapshot.Exclude = excludes
+	writeYAML(configPath, cfg)
 }
 
 // AddIntercept adds a command to the intercept list.

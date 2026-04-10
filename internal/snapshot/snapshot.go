@@ -34,12 +34,12 @@ type Cloner interface {
 }
 
 // New creates a Snapshotter.
-func New(projectDir string, keep int) *Snapshotter {
+func New(projectDir string, keep int, excludes map[string]bool) *Snapshotter {
 	return &Snapshotter{
 		ProjectDir:  projectDir,
 		SnapshotDir: filepath.Join(projectDir, ".yu", "snapshots"),
 		Keep:        keep,
-		cloner:      &platformCloner{},
+		cloner:      &platformCloner{excludes: excludes},
 	}
 }
 

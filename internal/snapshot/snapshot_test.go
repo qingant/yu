@@ -15,7 +15,7 @@ func TestSnapshotWithSummary(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Hello"), 0644)
 
-	s := New(dir, 5)
+	s := New(dir, 5, nil)
 
 	// Snapshot 0 — baseline
 	snap0, err := s.Create("init")

@@ -114,10 +114,19 @@ func (s *Sandbox) Run() error {
 
 	s.configureKeyReplacements()
 
+	// Scan for large directories and prompt user
+	snapCfg := s.Config.Snapshot
+	newExcludes := snapshot.ScanAndPrompt(s.ProjectDir, snapCfg.SizeThresholdMB, snapCfg.Exclude)
+	if len(newExcludes) > 0 {
+		snapCfg.Exclude = append(snapCfg.Exclude, newExcludes...)
+		// Persist to config so we don't ask again
+		config.SaveSnapshotExcludes(s.ProjectDir, snapCfg.Exclude)
+	}
+	excludeSet := snapshot.BuildExcludeSet(s.ProjectDir, snapCfg.Exclude)
+
 	// Start snapshot watcher
 	yuLogStderr("Starting snapshot watcher")
-	snapCfg := s.Config.Snapshot
-	snapper := snapshot.New(s.ProjectDir, snapCfg.Keep)
+	snapper := snapshot.New(s.ProjectDir, snapCfg.Keep, excludeSet)
 	s.watcher = snapshot.NewWatcher(snapper, snapCfg.QuietSeconds, snapCfg.FileThreshold, yuLog)
 	if err := s.watcher.Start(); err != nil {
 		yuLog("Warning: snapshot watcher failed: %v", err)

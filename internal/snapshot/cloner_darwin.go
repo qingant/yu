@@ -9,7 +9,9 @@ import (
 )
 
 // platformCloner uses APFS clone (cp -c) on macOS for instant COW copies.
-type platformCloner struct{}
+type platformCloner struct {
+	excludes map[string]bool // merged: hardcoded + .gitignore + config
+}
 
 // Directories to skip in snapshots — large, recoverable, or irrelevant.
 var skipClone = map[string]bool{
@@ -33,7 +35,7 @@ func (c *platformCloner) Clone(src, dst string) error {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if skipClone[name] {
+		if skipClone[name] || c.excludes[name] {
 			continue
 		}
 
@@ -43,7 +45,7 @@ func (c *platformCloner) Clone(src, dst string) error {
 		// Use cp -c -r for APFS clone
 		cmd := exec.Command("cp", "-c", "-r", srcPath, dstPath)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			// Fallback to regular copy if APFS clone not supported
+			fmt.Fprintf(os.Stderr, "[yu] Warning: APFS clone failed for %s, using regular copy\n", name)
 			cmd = exec.Command("cp", "-r", srcPath, dstPath)
 			if out2, err2 := cmd.CombinedOutput(); err2 != nil {
 				return fmt.Errorf("copying %s: %s %s", name, string(out), string(out2))

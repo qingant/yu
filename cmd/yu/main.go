@@ -271,7 +271,7 @@ func snapshotsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := resolveDir(args)
 			cfg, _ := config.Load(dir, "")
-			s := snapshot.New(dir, cfg.Snapshot.Keep)
+			s := snapshot.New(dir, cfg.Snapshot.Keep, nil)
 			snaps := s.List()
 			if len(snaps) == 0 {
 				fmt.Println("No snapshots found.")
@@ -312,7 +312,7 @@ func rollbackCmd() *cobra.Command {
 			}
 			dir := resolveDir(args[1:])
 			cfg, _ := config.Load(dir, "")
-			s := snapshot.New(dir, cfg.Snapshot.Keep)
+			s := snapshot.New(dir, cfg.Snapshot.Keep, nil)
 			if err := s.Rollback(id); err != nil {
 				return err
 			}
