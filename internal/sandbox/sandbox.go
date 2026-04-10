@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/taoai/yu/internal/cloud"
 	"github.com/taoai/yu/internal/cmdproxy"
 	"github.com/taoai/yu/internal/config"
 	"github.com/taoai/yu/internal/netproxy"
@@ -49,8 +50,9 @@ type Sandbox struct {
 	Command    []string
 	Config     *config.Config
 	TmpDir     string // /tmp/yu-<id>/
-	cmdDaemon  *cmdproxy.Daemon
-	watcher    *snapshot.Watcher
+	cmdDaemon    *cmdproxy.Daemon
+	watcher      *snapshot.Watcher
+	cloudSession *cloud.Session
 	apiProxy   *netproxy.APIProxy
 	apiAddr    string
 	dummyKeys  map[string]string // env var name → dummy value
@@ -140,6 +142,26 @@ func (s *Sandbox) Run() error {
 	}
 	if err := cmdproxy.GenerateShims(shimsDir, socketPath, yuBin, s.Config.Commands.Intercept); err != nil {
 		return fmt.Errorf("generating shims: %w", err)
+	}
+
+	// Connect to Cloud if paired
+	if cloudCfg, err := cloud.LoadConfig(); err == nil {
+		agent := ""
+		if len(s.Command) > 0 {
+			agent = filepath.Base(s.Command[0])
+		}
+		session, err := cloud.StartSession(cloudCfg, agent, s.ProjectDir)
+		if err != nil {
+			yuLog("Cloud session failed: %v", err)
+		} else {
+			if err := session.Connect(); err != nil {
+				yuLog("Cloud WebSocket failed: %v", err)
+			} else {
+				s.cloudSession = session
+				defer session.Close(cloudCfg)
+				yuLogStderr("Connected to Yu Cloud (session %s)", session.SessionID[:8])
+			}
+		}
 	}
 
 	yuLogStderr("Launching: %s", strings.Join(s.Command, " "))

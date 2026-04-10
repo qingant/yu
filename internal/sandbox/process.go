@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/taoai/yu/internal/cloud"
 	"github.com/taoai/yu/internal/fsjail"
 )
 
@@ -131,10 +132,17 @@ func (s *Sandbox) launch() (int, error) {
 
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = s.ProjectDir
+	cmd.Env = s.buildEnv()
+
+	if s.cloudSession != nil {
+		// Relay mode: pipe stdout/stderr through cloud, accept input from cloud
+		return s.launchWithRelay(cmd)
+	}
+
+	// Local mode: direct stdin/stdout
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = s.buildEnv()
 
 	err := cmd.Run()
 	if err != nil {
@@ -144,6 +152,101 @@ func (s *Sandbox) launch() (int, error) {
 		return 1, fmt.Errorf("running command: %w", err)
 	}
 	return 0, nil
+}
+
+// launchWithRelay runs the command with stdin/stdout relayed to both
+// the local terminal AND the cloud session.
+func (s *Sandbox) launchWithRelay(cmd *exec.Cmd) (int, error) {
+	// Stdout: tee to local terminal + cloud
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return 1, err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return 1, err
+	}
+
+	// Stdin: merge from local terminal + cloud
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return 1, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return 1, fmt.Errorf("starting command: %w", err)
+	}
+
+	// Relay stdout: read from agent, write to terminal + cloud
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdoutPipe.Read(buf)
+			if n > 0 {
+				data := string(buf[:n])
+				os.Stdout.WriteString(data)
+				s.cloudSession.SendOutput(data)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Relay stderr: same treatment
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderrPipe.Read(buf)
+			if n > 0 {
+				data := string(buf[:n])
+				os.Stderr.WriteString(data)
+				s.cloudSession.SendOutput(data)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Read from local stdin → agent
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				stdinPipe.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Read from cloud → agent stdin
+	go func() {
+		for {
+			msg, err := s.cloudSession.Receive()
+			if err != nil {
+				return
+			}
+			if msg.Type == "input" {
+				stdinPipe.Write([]byte(msg.Data + "\n"))
+			}
+		}
+	}()
+
+	exitCode := 0
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return 1, fmt.Errorf("running command: %w", err)
+		}
+	}
+
+	s.cloudSession.Send(cloud.Message{Type: "session_end"})
+	return exitCode, nil
 }
 
 // buildEnv creates the environment for the sandboxed process.
