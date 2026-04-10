@@ -22,6 +22,7 @@ var slashCommands = []string{
 	"/clear", "/compact", "/new",
 	"/sessions", "/resume",
 	"/model", "/init",
+	"/jobs", "/logs", "/kill",
 	"/remember", "/memory", "/forget",
 }
 
@@ -61,20 +62,33 @@ func Main() {
 
 	maxTokens := 8192
 	provider := NewProvider(model, apiKey, baseURL, maxTokens)
+
+	// Background process manager with exit notifications
+	tmpDir := os.TempDir()
+	bgManager := NewBgManager(projectDir, filepath.Join(tmpDir, "yu-bg"), func(p *BgProcess) {
+		status := "exited"
+		if p.ExitCode != 0 {
+			status = fmt.Sprintf("failed (exit %d)", p.ExitCode)
+		}
+		fmt.Printf("\n\033[2m[bg #%d %s] %s\033[0m\n", p.ID, status, truncCmd(p.Command, 40))
+	})
+
 	executor := &ToolExecutor{
 		ProjectDir:  projectDir,
 		BashTimeout: 120 * time.Second,
+		BgManager:   bgManager,
 	}
 	tools := toolDefs()
 	var st stats
 
-	// Signal handling
+	// Signal handling — also clean up background processes
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		cancel()
+		bgManager.StopAll()
 		fmt.Println()
 		os.Exit(0)
 	}()
@@ -95,7 +109,7 @@ func Main() {
 
 	// Readline with tab completion
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:            promptString(model),
+		Prompt:            promptString(model, bgManager.RunningCount()),
 		HistoryFile:       historyFile(wsDir),
 		AutoComplete:      newCompleter(),
 		InterruptPrompt:   "^C",
@@ -119,7 +133,7 @@ func Main() {
 	fmt.Println()
 
 	for {
-		rl.SetPrompt(promptString(model))
+		rl.SetPrompt(promptString(model, bgManager.RunningCount()))
 		input, err := rl.Readline()
 		if err != nil {
 			if err == readline.ErrInterrupt {
@@ -137,7 +151,7 @@ func Main() {
 
 		// Slash commands
 		if strings.HasPrefix(input, "/") {
-			result := handleSlashCommand(input, session, projectDir, wsDir, provider)
+			result := handleSlashCommand(input, session, projectDir, wsDir, provider, bgManager)
 			if result.newSession {
 				session = NewSession(model)
 				system = buildSystemPrompt(projectDir, findMemoryFile(wsDir))
@@ -205,9 +219,13 @@ func Main() {
 	}
 }
 
-// promptString builds a single-line prompt. Status shown after turns, not here.
-func promptString(model string) string {
-	return fmt.Sprintf("\033[1;32myu\033[0m \033[2m%s\033[0m> ", shortModel(model))
+// promptString builds a single-line prompt with optional bg process indicator.
+func promptString(model string, bgCount int) string {
+	bg := ""
+	if bgCount > 0 {
+		bg = fmt.Sprintf(" \033[33m[%d bg]\033[0m", bgCount)
+	}
+	return fmt.Sprintf("\033[1;32myu\033[0m \033[2m%s\033[0m%s> ", shortModel(model), bg)
 }
 
 func shortModel(model string) string {

@@ -23,7 +23,7 @@ type commandResult struct {
 
 // handleSlashCommand processes user input starting with "/".
 // Returns what action the loop should take.
-func handleSlashCommand(input string, session *Session, projectDir, wsDir string, provider Provider) commandResult {
+func handleSlashCommand(input string, session *Session, projectDir, wsDir string, provider Provider, bgm *BgManager) commandResult {
 	parts := strings.Fields(input)
 	cmd := parts[0]
 
@@ -119,6 +119,57 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 		clearMemory(wsDir)
 		fmt.Println("Memory cleared.")
 
+	case "/jobs", "/bg":
+		procs := bgm.List()
+		if len(procs) == 0 {
+			fmt.Println("No background processes.")
+		} else {
+			fmt.Println()
+			for _, p := range procs {
+				fmt.Printf("  %s\n", p.FormatStatus())
+			}
+			fmt.Println()
+		}
+
+	case "/logs":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /logs <id> [lines]")
+			return commandResult{handled: true}
+		}
+		id, err := strconv.Atoi(parts[1])
+		if err != nil {
+			fmt.Println("Invalid process ID")
+			return commandResult{handled: true}
+		}
+		tail := 50
+		if len(parts) >= 3 {
+			if n, err := strconv.Atoi(parts[2]); err == nil {
+				tail = n
+			}
+		}
+		logs, err := bgm.Logs(id, tail)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+		} else {
+			fmt.Println(logs)
+		}
+
+	case "/kill":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /kill <id>")
+			return commandResult{handled: true}
+		}
+		id, err := strconv.Atoi(parts[1])
+		if err != nil {
+			fmt.Println("Invalid process ID")
+			return commandResult{handled: true}
+		}
+		if err := bgm.Stop(id); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+		} else {
+			fmt.Printf("Stopped #%d\n", id)
+		}
+
 	case "/init":
 		initProjectContract(projectDir)
 
@@ -138,11 +189,14 @@ Commands:
   /help              Show this help
   /init              Create Yu.md in project root
   /clear             Clear conversation
-  /compact           Compress context (summarize old messages)
+  /compact           Compress context
   /new               Start new session
   /sessions          List saved sessions
   /resume [n]        Resume a saved session
   /model [name]      Show or switch model
+  /jobs              List background processes
+  /logs <id> [n]     Show last n lines of process output
+  /kill <id>         Stop a background process
   /remember <text>   Save a note to memory
   /memory            Show saved memory
   /forget            Clear all memory

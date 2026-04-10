@@ -21,6 +21,7 @@ import (
 type ToolExecutor struct {
 	ProjectDir  string
 	BashTimeout time.Duration
+	BgManager   *BgManager
 }
 
 // toolDefs returns all tool definitions for the API.
@@ -128,6 +129,20 @@ func toolDefs() []ToolDef {
 			}`),
 		},
 		{
+			Name:        "background",
+			Description: "Manage background processes (dev servers, watchers, etc.). Actions: 'start' launches a command, 'logs' reads output, 'stop' kills it.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"properties": {
+					"action": {"type": "string", "enum": ["start", "logs", "stop"], "description": "Action to perform"},
+					"command": {"type": "string", "description": "Shell command (for 'start')"},
+					"id": {"type": "integer", "description": "Process ID (for 'logs' and 'stop')"},
+					"tail": {"type": "integer", "description": "Number of log lines to return (default: 50, for 'logs')"}
+				},
+				"required": ["action"]
+			}`),
+		},
+		{
 			Name:        "ask_user",
 			Description: "Ask the user a question, present choices, or request confirmation. Use when you need clarification or approval before proceeding.",
 			InputSchema: rawJSON(`{
@@ -193,6 +208,8 @@ func (e *ToolExecutor) execute(name string, input json.RawMessage) (string, bool
 		return e.execPoll(input)
 	case "web_fetch":
 		return e.execWebFetch(input)
+	case "background":
+		return e.execBackground(input)
 	case "ask_user":
 		return e.execAskUser(input)
 	case "plan":
@@ -422,6 +439,59 @@ func htmlToText(s string) string {
 	}
 	extract(doc)
 	return strings.TrimSpace(b.String())
+}
+
+func (e *ToolExecutor) execBackground(input json.RawMessage) (string, bool) {
+	var args struct {
+		Action  string `json:"action"`
+		Command string `json:"command"`
+		ID      int    `json:"id"`
+		Tail    int    `json:"tail"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return fmt.Sprintf("invalid input: %v", err), true
+	}
+
+	if e.BgManager == nil {
+		return "background processes not available", true
+	}
+
+	switch args.Action {
+	case "start":
+		if args.Command == "" {
+			return "command is required for 'start'", true
+		}
+		p, err := e.BgManager.Start(args.Command)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), true
+		}
+		return fmt.Sprintf("Started background process #%d (pid %d): %s", p.ID, p.Pid, p.Command), false
+
+	case "logs":
+		if args.ID == 0 {
+			return "id is required for 'logs'", true
+		}
+		logs, err := e.BgManager.Logs(args.ID, args.Tail)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), true
+		}
+		if logs == "" {
+			return "(no output yet)", false
+		}
+		return logs, false
+
+	case "stop":
+		if args.ID == 0 {
+			return "id is required for 'stop'", true
+		}
+		if err := e.BgManager.Stop(args.ID); err != nil {
+			return fmt.Sprintf("error: %v", err), true
+		}
+		return fmt.Sprintf("Stopped process #%d", args.ID), false
+
+	default:
+		return fmt.Sprintf("unknown action: %s (use start, logs, stop)", args.Action), true
+	}
 }
 
 func (e *ToolExecutor) execReadFile(input json.RawMessage) (string, bool) {
