@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/taoai/yu/internal/cloud"
 	"github.com/taoai/yu/internal/cmdproxy"
 	"github.com/taoai/yu/internal/config"
 	"github.com/taoai/yu/internal/sandbox"
@@ -99,6 +100,7 @@ func main() {
 	rootCmd.AddCommand(shimCmd())
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(updateCmd())
+	rootCmd.AddCommand(pairCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -326,6 +328,16 @@ func versionCmd() *cobra.Command {
 		Short: "Print yu version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println("yu " + version)
+		},
+	}
+}
+
+func pairCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "pair",
+		Short: "Pair this machine with the Yu app",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cloud.Pair()
 		},
 	}
 }
