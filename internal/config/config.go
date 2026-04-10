@@ -66,7 +66,7 @@ func Defaults() *Config {
 			FileThreshold: 50,
 		},
 		Commands: CommandsConfig{
-			Intercept: []string{"git", "ssh", "gh", "aws", "scp", "wrangler", "npx"},
+			Intercept: []string{"git", "ssh", "gh", "aws", "scp", "wrangler"},
 		},
 		Credentials: make(map[string]string),
 	}
