@@ -39,7 +39,7 @@ func New(projectDir string, keep int, excludes map[string]bool) *Snapshotter {
 		ProjectDir:  projectDir,
 		SnapshotDir: filepath.Join(projectDir, ".yu", "snapshots"),
 		Keep:        keep,
-		cloner:      &platformCloner{excludes: excludes},
+		cloner:      &platformCloner{projectDir: projectDir, excludes: excludes},
 	}
 }
 

@@ -14,7 +14,9 @@ type LargeDir struct {
 	SizeMB int64
 }
 
-// ScanAndPrompt scans for large directories and asks the user to exclude them.
+// ScanAndPrompt scans for large directories (up to 3 levels deep) and asks
+// the user to exclude them. Drills down to find the actual heavy subdirectory
+// rather than excluding a whole top-level dir.
 // Returns new excludes to add to config. Returns nil if none found or user declines.
 func ScanAndPrompt(projectDir string, thresholdMB int, existingExcludes []string) []string {
 	if thresholdMB <= 0 {
@@ -22,26 +24,7 @@ func ScanAndPrompt(projectDir string, thresholdMB int, existingExcludes []string
 	}
 
 	excluded := buildExcludeSet(projectDir, existingExcludes)
-
-	entries, err := os.ReadDir(projectDir)
-	if err != nil {
-		return nil
-	}
-
-	var large []LargeDir
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") || excluded[name] {
-			continue
-		}
-		sizeMB := dirSizeMB(filepath.Join(projectDir, name))
-		if sizeMB >= int64(thresholdMB) {
-			large = append(large, LargeDir{Name: name, SizeMB: sizeMB})
-		}
-	}
+	large := findLargeDirs(projectDir, projectDir, excluded, int64(thresholdMB), 0, 3)
 
 	if len(large) == 0 {
 		return nil
@@ -102,6 +85,53 @@ func buildExcludeSet(projectDir string, configExcludes []string) map[string]bool
 	}
 
 	return excluded
+}
+
+// findLargeDirs recursively scans for directories exceeding thresholdMB.
+// It drills down up to maxDepth levels to pinpoint the actual large subdirectory.
+// e.g. if zero/ is 1GB but zero/repos/ is 900MB, it reports zero/repos/ not zero/.
+func findLargeDirs(root, dir string, excluded map[string]bool, thresholdMB int64, depth, maxDepth int) []LargeDir {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var result []LargeDir
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") || skipClone[name] {
+			continue
+		}
+
+		rel, _ := filepath.Rel(root, filepath.Join(dir, name))
+		if excluded[rel] || excluded[name] {
+			continue
+		}
+
+		fullPath := filepath.Join(dir, name)
+		sizeMB := dirSizeMB(fullPath)
+		if sizeMB < thresholdMB {
+			continue
+		}
+
+		// Try to drill down — find which child is responsible
+		if depth < maxDepth-1 {
+			children := findLargeDirs(root, fullPath, excluded, thresholdMB, depth+1, maxDepth)
+			if len(children) > 0 {
+				// Children account for the size, report them instead
+				result = append(result, children...)
+				continue
+			}
+		}
+
+		// This dir itself is the culprit
+		result = append(result, LargeDir{Name: rel, SizeMB: sizeMB})
+	}
+
+	return result
 }
 
 func dirSizeMB(path string) int64 {
