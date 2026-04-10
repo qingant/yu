@@ -238,6 +238,26 @@ func configCmd() *cobra.Command {
 		},
 	})
 
+	// intercept add
+	cmd.AddCommand(&cobra.Command{
+		Use:   "intercept-add <command>",
+		Short: "Add a command to the proxy intercept list (e.g. wrangler, kubectl)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return config.AddIntercept(resolveDir(nil), args[0])
+		},
+	})
+
+	// intercept rm
+	cmd.AddCommand(&cobra.Command{
+		Use:   "intercept-rm <command>",
+		Short: "Remove a command from the proxy intercept list",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return config.RemoveIntercept(resolveDir(nil), args[0])
+		},
+	})
+
 	return cmd
 }
 

@@ -226,6 +226,47 @@ func RemoveInjectRule(dir, path string) error {
 	return writeYAML(configPath, cfg)
 }
 
+// AddIntercept adds a command to the intercept list.
+func AddIntercept(dir, command string) error {
+	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	cfg := Defaults()
+	loadYAML(configPath, cfg)
+
+	for _, existing := range cfg.Commands.Intercept {
+		if existing == command {
+			return fmt.Errorf("%q already in intercept list", command)
+		}
+	}
+
+	cfg.Commands.Intercept = append(cfg.Commands.Intercept, command)
+	fmt.Printf("Added %q to intercept list\n", command)
+	return writeYAML(configPath, cfg)
+}
+
+// RemoveIntercept removes a command from the intercept list.
+func RemoveIntercept(dir, command string) error {
+	configPath := filepath.Join(dir, ".yu", "config.yaml")
+	cfg := Defaults()
+	loadYAML(configPath, cfg)
+
+	var remaining []string
+	found := false
+	for _, c := range cfg.Commands.Intercept {
+		if c == command {
+			found = true
+		} else {
+			remaining = append(remaining, c)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%q not in intercept list", command)
+	}
+
+	cfg.Commands.Intercept = remaining
+	fmt.Printf("Removed %q from intercept list\n", command)
+	return writeYAML(configPath, cfg)
+}
+
 func writeYAML(path string, cfg *Config) error {
 	os.MkdirAll(filepath.Dir(path), 0700)
 	data, err := yaml.Marshal(cfg)
