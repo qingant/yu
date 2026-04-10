@@ -10,14 +10,13 @@ import (
 
 // LargeDir is a directory exceeding the size threshold.
 type LargeDir struct {
-	Name   string
-	SizeMB int64
+	Name   string // relative path from project root
+	SizeMB int64  // size excluding already-excluded children
 }
 
 // ScanAndPrompt scans for large directories (up to 3 levels deep) and asks
-// the user to exclude them. Drills down to find the actual heavy subdirectory
-// rather than excluding a whole top-level dir.
-// Returns new excludes to add to config. Returns nil if none found or user declines.
+// the user about each one individually, with an option to exclude the parent instead.
+// Returns new excludes to add to config.
 func ScanAndPrompt(projectDir string, thresholdMB int, existingExcludes []string) []string {
 	if thresholdMB <= 0 {
 		return nil
@@ -30,28 +29,41 @@ func ScanAndPrompt(projectDir string, thresholdMB int, existingExcludes []string
 		return nil
 	}
 
+	reader := bufio.NewReader(os.Stdin)
+	var newExcludes []string
+
 	fmt.Fprintf(os.Stderr, "[yu] Large directories detected:\n")
 	for _, d := range large {
-		fmt.Fprintf(os.Stderr, "       %-20s (%s)\n", d.Name+"/", formatSize(d.SizeMB))
-	}
-	fmt.Fprintf(os.Stderr, "\n     Exclude from snapshots? [Y/n]: ")
+		fmt.Fprintf(os.Stderr, "\n  %s/ (%s)\n", d.Name, formatSize(d.SizeMB))
 
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(strings.ToLower(input))
-
-	if input == "" || input == "y" || input == "yes" {
-		var names []string
-		for _, d := range large {
-			names = append(names, d.Name)
+		parent := filepath.Dir(d.Name)
+		if parent == "." {
+			// Top-level dir, no parent option
+			fmt.Fprintf(os.Stderr, "  Exclude from snapshots? [Y/n]: ")
+		} else {
+			fmt.Fprintf(os.Stderr, "  [Y] Exclude %s/  [u] Exclude parent %s/  [n] Keep: ", d.Name, parent)
 		}
-		return names
+
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToLower(input))
+
+		switch input {
+		case "", "y", "yes":
+			newExcludes = append(newExcludes, d.Name)
+			excluded[d.Name] = true
+		case "u", "up":
+			if parent != "." {
+				newExcludes = append(newExcludes, parent)
+				excluded[parent] = true
+			}
+		}
+		// "n" or anything else → skip
 	}
-	return nil
+
+	return newExcludes
 }
 
 // BuildExcludeSet merges hardcoded skip list + .gitignore + config excludes.
-// Exported so the cloner can use it.
 func BuildExcludeSet(projectDir string, configExcludes []string) map[string]bool {
 	return buildExcludeSet(projectDir, configExcludes)
 }
@@ -59,17 +71,13 @@ func BuildExcludeSet(projectDir string, configExcludes []string) map[string]bool
 func buildExcludeSet(projectDir string, configExcludes []string) map[string]bool {
 	excluded := make(map[string]bool)
 
-	// Hardcoded
 	for name := range skipClone {
 		excluded[name] = true
 	}
-
-	// Config
 	for _, name := range configExcludes {
 		excluded[name] = true
 	}
 
-	// .gitignore top-level directory patterns
 	data, err := os.ReadFile(filepath.Join(projectDir, ".gitignore"))
 	if err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -88,8 +96,8 @@ func buildExcludeSet(projectDir string, configExcludes []string) map[string]bool
 }
 
 // findLargeDirs recursively scans for directories exceeding thresholdMB.
-// It drills down up to maxDepth levels to pinpoint the actual large subdirectory.
-// e.g. if zero/ is 1GB but zero/repos/ is 900MB, it reports zero/repos/ not zero/.
+// Drills down up to maxDepth to pinpoint the heavy subdirectory.
+// Subtracts already-excluded children when computing parent size.
 func findLargeDirs(root, dir string, excluded map[string]bool, thresholdMB int64, depth, maxDepth int) []LargeDir {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -106,39 +114,65 @@ func findLargeDirs(root, dir string, excluded map[string]bool, thresholdMB int64
 			continue
 		}
 
-		rel, _ := filepath.Rel(root, filepath.Join(dir, name))
-		if excluded[rel] || excluded[name] {
+		fullPath := filepath.Join(dir, name)
+		rel, _ := filepath.Rel(root, fullPath)
+
+		// Skip if this path or any parent is already excluded
+		if isExcluded(rel, excluded) {
 			continue
 		}
 
-		fullPath := filepath.Join(dir, name)
-		sizeMB := dirSizeMB(fullPath)
+		// Compute size, skipping excluded subdirectories
+		sizeMB := dirSizeExcluding(fullPath, root, excluded)
 		if sizeMB < thresholdMB {
 			continue
 		}
 
-		// Try to drill down — find which child is responsible
+		// Try to drill down
 		if depth < maxDepth-1 {
 			children := findLargeDirs(root, fullPath, excluded, thresholdMB, depth+1, maxDepth)
 			if len(children) > 0 {
-				// Children account for the size, report them instead
 				result = append(result, children...)
 				continue
 			}
 		}
 
-		// This dir itself is the culprit
 		result = append(result, LargeDir{Name: rel, SizeMB: sizeMB})
 	}
 
 	return result
 }
 
-func dirSizeMB(path string) int64 {
+// isExcluded checks if a relative path or any of its parents is in the exclude set.
+func isExcluded(rel string, excluded map[string]bool) bool {
+	if excluded[rel] {
+		return true
+	}
+	// Check parent paths: a/b/c → check a/b, then a
+	for p := filepath.Dir(rel); p != "." && p != ""; p = filepath.Dir(p) {
+		if excluded[p] {
+			return true
+		}
+	}
+	// Check by basename (for hardcoded skip list)
+	if excluded[filepath.Base(rel)] {
+		return true
+	}
+	return false
+}
+
+// dirSizeExcluding computes directory size, skipping excluded subdirectories.
+func dirSizeExcluding(path, root string, excluded map[string]bool) int64 {
 	var total int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
+		}
+		if info.IsDir() && p != path {
+			rel, _ := filepath.Rel(root, p)
+			if isExcluded(rel, excluded) {
+				return filepath.SkipDir
+			}
 		}
 		if !info.IsDir() {
 			total += info.Size()
