@@ -126,15 +126,27 @@ func (s *Sandbox) launch() (int, error) {
 			}
 		}
 
-		// Resolve the command binary and allow its directory.
-		// The binary may be in ~/.local/bin or another home subdirectory
-		// that the sandbox would otherwise deny.
+		// Resolve the command binary to an absolute path and allow its
+		// directory chain. The binary may be a symlink (e.g.
+		// ~/.local/bin/claude → ~/.local/share/claude/versions/X).
+		// We need both the symlink dir and the target dir accessible,
+		// and we pass the resolved absolute path to sandbox-exec so
+		// execvp doesn't need to search PATH inside the sandbox.
 		if binPath, err := exec.LookPath(command[0]); err == nil {
-			if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
-				binDir := filepath.Dir(resolved)
-				if strings.HasPrefix(binDir, realHome) {
-					allowPaths = append(allowPaths, binDir)
+			absPath, _ := filepath.Abs(binPath)
+			// Allow the directory containing the symlink
+			if dir := filepath.Dir(absPath); strings.HasPrefix(dir, realHome) {
+				allowPaths = append(allowPaths, dir)
+			}
+			// Allow the directory containing the resolved target
+			if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+				if dir := filepath.Dir(resolved); strings.HasPrefix(dir, realHome) {
+					allowPaths = append(allowPaths, dir)
 				}
+				// Use resolved absolute path so sandbox doesn't need PATH lookup
+				command[0] = resolved
+			} else {
+				command[0] = absPath
 			}
 		}
 
