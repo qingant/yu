@@ -108,15 +108,33 @@ func Main() {
 	var st stats
 
 	// Signal handling
+	// Ctrl+C during a turn cancels the turn; Ctrl+C while idle exits.
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var inTurn atomic.Bool
+	var turnCancel atomic.Pointer[context.CancelFunc]
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		cancel()
-		bgManager.StopAll()
-		fmt.Println()
-		os.Exit(0)
+		for sig := range sigCh {
+			if sig == syscall.SIGTERM {
+				bgManager.StopAll()
+				fmt.Println()
+				os.Exit(0)
+			}
+			// SIGINT (Ctrl+C)
+			if inTurn.Load() {
+				// Cancel just the current turn
+				if tc := turnCancel.Load(); tc != nil {
+					(*tc)()
+				}
+			} else {
+				// Idle — exit
+				bgManager.StopAll()
+				fmt.Println()
+				os.Exit(0)
+			}
+		}
 	}()
 
 	// Session resolution
@@ -281,18 +299,19 @@ func Main() {
 		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnStart := time.Now()
 
-		// Per-turn context: Esc cancels just this turn (not the whole session)
-		turnCtx, turnCancel := context.WithCancel(ctx)
-		stopEscWatcher := make(chan struct{})
-		go watchEsc(turnCancel, stopEscWatcher)
+		// Per-turn context: Ctrl+C cancels just this turn
+		thisTurnCtx, thisTurnCancel := context.WithCancel(ctx)
+		turnCancel.Store(&thisTurnCancel)
+		inTurn.Store(true)
 
-		lastInput, turnErr := agentTurn(turnCtx, provider, system, &session.Messages, tools, executor, &st)
+		lastInput, turnErr := agentTurn(thisTurnCtx, provider, system, &session.Messages, tools, executor, &st)
 
-		close(stopEscWatcher)
-		turnCancel()
+		inTurn.Store(false)
+		turnCancel.Store(nil)
+		thisTurnCancel()
 
 		if turnErr != nil {
-			if turnCtx.Err() != nil {
+			if thisTurnCtx.Err() != nil {
 				fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
 				// Remove the last user message so the turn can be retried
 				if len(session.Messages) > 0 && session.Messages[len(session.Messages)-1].Role == "user" {
@@ -380,32 +399,6 @@ func expandAtFiles(input, projectDir string) (display string, expanded string) {
 
 // --- Welcome & History ---
 
-// watchEsc watches for Esc key and calls cancel if pressed.
-// Uses a separate goroutine with blocking read to avoid interfering
-// with readline's terminal state management.
-func watchEsc(cancel context.CancelFunc, stopCh <-chan struct{}) {
-	ch := make(chan struct{}, 1)
-	go func() {
-		buf := make([]byte, 16)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				return
-			}
-			for i := 0; i < n; i++ {
-				if buf[i] == 0x1B {
-					ch <- struct{}{}
-					return
-				}
-			}
-		}
-	}()
-	select {
-	case <-stopCh:
-	case <-ch:
-		cancel()
-	}
-}
 
 func printWelcome(model, projectDir string, session *Session) {
 	fmt.Println()
