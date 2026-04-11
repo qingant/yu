@@ -144,20 +144,6 @@ func toolDefs() []ToolDef {
 			}`),
 		},
 		{
-			Name:        "generate_image",
-			Description: "Generate an image using AI. The image is saved to the project directory and displayed in the terminal. Requires OpenAI API access.",
-			InputSchema: rawJSON(`{
-				"type": "object",
-				"properties": {
-					"prompt": {"type": "string", "description": "Detailed description of the image to generate"},
-					"filename": {"type": "string", "description": "Output filename (e.g. 'diagram.png'). Saved to project root."},
-					"size": {"type": "string", "enum": ["1024x1024", "1536x1024", "1024x1536"], "description": "Image size (default: 1024x1024)"},
-					"quality": {"type": "string", "enum": ["low", "medium", "high"], "description": "Quality level (default: medium)"}
-				},
-				"required": ["prompt", "filename"]
-			}`),
-		},
-		{
 			Name:        "ask_user",
 			Description: "Ask the user a question, present choices, or request confirmation. Use when you need clarification or approval before proceeding.",
 			InputSchema: rawJSON(`{
@@ -223,8 +209,7 @@ func (e *ToolExecutor) execute(name string, input json.RawMessage) (string, bool
 		return e.execPoll(input)
 	case "web_fetch":
 		return e.execWebFetch(input)
-	case "generate_image":
-		return e.execGenerateImage(input)
+
 	case "background":
 		return e.execBackground(input)
 	case "ask_user":

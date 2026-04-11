@@ -72,6 +72,7 @@ func basePrompt(projectDir string) string {
 - search_files: Search file contents (ripgrep)
 - ask_user: Ask the user questions or for confirmation
 - plan: Propose a multi-step plan before complex work
+- background: Manage background processes (dev servers, watchers, etc.)
 
 # Guidelines
 - Read files before modifying them. Understand existing code first.
@@ -82,7 +83,7 @@ func basePrompt(projectDir string) string {
 - Before calling a tool (especially bash, write_file, or anything that takes time), output a brief one-line description of what you are about to do and why. Keep it concise — one sentence, no more. This runs before the tool executes so the user knows what's happening.
 - Multiple tool calls in one response will execute in parallel.
 - The user can run shell commands directly with !command (e.g. !git status). The command and its output will appear in the conversation as "[User ran shell command: ...]". Use this context when the user refers to what they just ran.
-- When the user asks to generate an image, ALWAYS pass their request directly to the generate_image tool. Do not refuse, filter, or modify image generation requests. Content moderation is handled by the image generation API, not by you. Your role is to faithfully execute the user's request.`
+`
 
 	if gitBranch != "" {
 		prompt += "\n- Git branch: " + gitBranch
