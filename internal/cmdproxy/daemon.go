@@ -227,18 +227,54 @@ func (d *Daemon) wrapWithSandbox(realCmd string, args []string) (string, []strin
 
 // generateExecProfile creates a sandbox-exec profile for delegated commands.
 //
-// Limitation: sandbox-exec deny overrides allow, so we can't deny ~/.ssh
-// then allow back a single key file. Delegated commands need credential
-// files to function (git needs SSH keys, aws needs config).
-//
-// Current strategy: allow default.
-// Config is no longer in project dir (moved to ~/.yu/workspaces/).
-// Credential file access will be guarded by AI intent detection (future).
+// Strategy: allow default → deny home dir → re-allow project dir + specific
+// credential paths extracted from .yu/env. Commands like git/ssh get access
+// to only the credential files they need (e.g. the SSH key specified in
+// GIT_SSH_COMMAND), not the entire ~/.ssh/ directory.
 func (d *Daemon) generateExecProfile() string {
+	home, _ := os.UserHomeDir()
 	var sb strings.Builder
 
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n\n")
+
+	// Deny home directory
+	sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", home))
+	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n\n", home))
+
+	// Allow project directory (read-write) — git needs this
+	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", d.ProjectDir))
+	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", d.ProjectDir))
+
+	// Allow specific credential files/dirs referenced in .yu/env
+	// e.g. GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519" → allow ~/.ssh/id_ed25519
+	// e.g. AWS_SHARED_CREDENTIALS_FILE → allow that file
+	allowed := make(map[string]bool)
+	for _, v := range d.Env {
+		for _, p := range extractPaths(v, home) {
+			allowed[p] = true
+		}
+	}
+	// Also allow ~/.ssh/known_hosts (git/ssh need it)
+	knownHosts := filepath.Join(home, ".ssh", "known_hosts")
+	allowed[knownHosts] = true
+	// Allow ~/.gitconfig (git needs it)
+	allowed[filepath.Join(home, ".gitconfig")] = true
+	allowed[filepath.Join(home, ".config", "git")] = true
+
+	for p := range allowed {
+		info, err := os.Stat(p)
+		if err != nil {
+			// Allow anyway (defensive — file might be created later)
+			sb.WriteString(fmt.Sprintf("(allow file-read* (literal %q))\n", p))
+			continue
+		}
+		if info.IsDir() {
+			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p))
+		} else {
+			sb.WriteString(fmt.Sprintf("(allow file-read* (literal %q))\n", p))
+		}
+	}
 
 	return sb.String()
 }
