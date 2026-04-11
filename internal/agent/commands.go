@@ -282,8 +282,11 @@ func detectProviders() []providerInfo {
 		})
 	}
 
-	// 3. Yu Custom (YU_BASE_URL + YU_API_KEY)
+	// 3. Yu Custom (YU_BASE_URL + YU_API_KEY or YU_API_TOKEN)
 	yuKey := os.Getenv("YU_API_KEY")
+	if yuKey == "" {
+		yuKey = os.Getenv("YU_API_TOKEN")
+	}
 	yuBase := os.Getenv("YU_BASE_URL")
 	if yuKey != "" && yuBase != "" {
 		providers = append(providers, providerInfo{

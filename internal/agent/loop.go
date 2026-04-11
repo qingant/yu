@@ -153,7 +153,7 @@ func Main() {
 			Role:    "user",
 			Content: []ContentBlock{{Type: "text", Text: execPrompt}},
 		})
-		err := agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
+		_, err := agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -281,9 +281,9 @@ func Main() {
 		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnStart := time.Now()
 
-		err = agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, err, reset)
+		lastInput, turnErr := agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
+		if turnErr != nil {
+			fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, turnErr, reset)
 		}
 
 		elapsed := time.Since(turnStart)
@@ -295,6 +295,9 @@ func Main() {
 
 		// Update session + global stats, auto-save
 		syncStats(&st, session, wsDir)
+
+		// Auto-compact when context is getting large
+		autoCompact(lastInput, session, provider)
 	}
 }
 
@@ -439,19 +442,20 @@ func shortModel(model string) string {
 
 // --- Agent Turn ---
 
-func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, messages *[]Message, tools []ToolDef, executor *ToolExecutor, st *stats) error {
+// agentTurn returns (lastInputTokens, error). lastInputTokens is the input size of the final API call.
+func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, messages *[]Message, tools []ToolDef, executor *ToolExecutor, st *stats) (int, error) {
 	for {
 		// Start spinner while waiting for first token
 		spinner := startSpinner("thinking")
 		ch, err := provider.Stream(ctx, system, *messages, tools)
 		if err != nil {
 			spinner.Stop()
-			return err
+			return 0, err
 		}
 
 		response, err := processStream(ch, spinner)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		st.totalInput.Add(int64(response.InputTokens))
@@ -473,7 +477,7 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 		}
 
 		if len(toolCalls) == 0 {
-			return nil
+			return response.InputTokens, nil
 		}
 
 		// Display tool calls with visual separation
@@ -889,6 +893,22 @@ func execDirectCommand(command, projectDir string) string {
 	}
 
 	return output.String()
+}
+
+// autoCompactThreshold — compact when input tokens exceed this.
+// Most models support 128k-200k context. Compact at 80k to leave room.
+const autoCompactThreshold = 80_000
+
+// autoCompact triggers compaction when the context is getting too large.
+func autoCompact(lastInputTokens int, session *Session, provider Provider) {
+	if lastInputTokens < autoCompactThreshold {
+		return
+	}
+	if len(session.Messages) < 6 {
+		return
+	}
+	fmt.Printf("\n  %s⟳ Auto-compacting context (%s input)...%s\n", yellow, formatTokens(int64(lastInputTokens)), reset)
+	compactConversation(session, provider)
 }
 
 // syncStats updates session stats from the run counters and saves.

@@ -267,9 +267,12 @@ func (s *Sandbox) buildEnv() []string {
 		if !isWhitelisted(key, extraKeep) {
 			continue
 		}
-		// If this key has a dummy/override, use that
+		// If this key has a proxy dummy, use that
 		if val, ok := s.dummyKeys[key]; ok {
 			env = append(env, key+"="+val)
+		} else if isSecret(key) {
+			// Secret without a proxy route — redact to prevent leaking
+			env = append(env, key+"=yu-redacted")
 		} else {
 			env = append(env, e)
 		}
