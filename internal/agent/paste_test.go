@@ -147,27 +147,26 @@ func TestMatchSeq(t *testing.T) {
 	}
 }
 
-func TestReplaceMidChunkNewlines(t *testing.T) {
+func TestReplacePasteNewlines(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  string
 	}{
 		{"no newlines", "hello", "hello"},
-		{"trailing newline only", "hello\n", "hello\n"},
-		{"trailing CR only", "hello\r", "hello\r"},
-		{"mid newline", "hello\nworld\n", "hello\u2028world\n"},
-		{"mid CR", "line1\rline2\r", "line1\u2028line2\r"},
-		{"mid CRLF", "a\r\nb\r\n", "a\u2028b\r\n"},
-		{"multi-line paste", "line1\nline2\nline3", "line1\u2028line2\u2028line3"},
-		{"single byte newline", "\n", "\n"},
+		{"LF replaced", "hello\nworld", "hello\u2028world"},
+		{"trailing LF replaced", "hello\n", "hello\u2028"},
+		{"CR preserved", "hello\r", "hello\r"},
+		{"CRLF as one", "a\r\nb", "a\u2028b"},
+		{"multi-line", "line1\nline2\nline3", "line1\u2028line2\u2028line3"},
+		{"single LF", "\n", "\u2028"},
 		{"empty", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := replaceMidChunkNewlines([]byte(tt.input))
+			got := replacePasteNewlines([]byte(tt.input))
 			if string(got) != tt.want {
-				t.Errorf("replaceMidChunkNewlines(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("replacePasteNewlines(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -175,7 +174,7 @@ func TestReplaceMidChunkNewlines(t *testing.T) {
 
 func TestNonBracketedPasteFallback(t *testing.T) {
 	// Simulate a paste arriving without bracketed paste markers.
-	// All bytes arrive in one Read from a terminal that doesn't support it.
+	// In raw mode, \n is always from paste (Enter sends \r).
 	pasteData := []byte("line1\nline2\nline3")
 	p := &pasteStdin{real: bytes.NewReader(pasteData)}
 
@@ -188,11 +187,10 @@ func TestNonBracketedPasteFallback(t *testing.T) {
 	}
 }
 
-func TestNonBracketedFallbackDisabledAfterBracketedPaste(t *testing.T) {
-	// Once bracketed paste is detected, the fallback should not activate.
-	// First: a bracketed paste (sets seenPasteMarker=true)
+func TestNewlineReplacementAlwaysActive(t *testing.T) {
+	// \n replacement works even after bracketed paste was seen,
+	// because in raw mode \n is never Enter.
 	paste1 := append(append(pasteStart, []byte("a\nb")...), pasteEnd...)
-	// Then: raw data with mid-chunk newlines (should NOT be treated as paste)
 	raw := []byte("x\ny\n")
 
 	combined := append(paste1, raw...)
@@ -201,9 +199,9 @@ func TestNonBracketedFallbackDisabledAfterBracketedPaste(t *testing.T) {
 	buf := make([]byte, 1024)
 	n, _ := p.Read(buf)
 	got := string(buf[:n])
-	// Bracketed paste content: a\u2028b
-	// Raw content after paste end: x\ny\n (newlines preserved because seenPasteMarker is true)
-	want := "a\u2028bx\ny\n"
+	// Bracketed paste: a\u2028b (replaced by process)
+	// Raw after paste end: x\u2028y\u2028 (replaced by fallback)
+	want := "a\u2028bx\u2028y\u2028"
 	if got != want {
 		t.Errorf("after bracketed paste: Read = %q, want %q", got, want)
 	}

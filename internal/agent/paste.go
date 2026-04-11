@@ -70,11 +70,12 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 	// Process the data: find paste start/end markers, replace newlines
 	out := p.process(data)
 
-	// Fallback for terminals without bracketed paste: if no paste markers
-	// were seen, newlines in the MIDDLE of a chunk are from a paste (all
-	// paste bytes arrive in one read). A trailing newline is Enter.
-	if !p.inPaste && !p.seenPasteMarker {
-		out = replaceMidChunkNewlines(out)
+	// In raw mode (during readline), Enter sends \r and paste newlines are \n.
+	// Always replace \n with placeholder — it's never Enter in raw mode.
+	// This serves as defense-in-depth: works whether bracketed paste is
+	// active or not, and regardless of chunk boundaries.
+	if !p.inPaste {
+		out = replacePasteNewlines(out)
 	}
 
 	n = copy(b, out)
@@ -176,51 +177,26 @@ func writeRune(buf *bytes.Buffer, r rune) {
 	buf.WriteRune(r)
 }
 
-// replaceMidChunkNewlines replaces \r and \n that appear before the end of the
-// data with U+2028 placeholders. A trailing newline is left as-is (it's the
-// user pressing Enter). This handles paste in terminals without bracketed paste:
-// all paste bytes arrive in one os.Stdin.Read, so mid-chunk newlines are from
-// the pasted text, not from the user pressing Enter.
-func replaceMidChunkNewlines(data []byte) []byte {
-	if len(data) == 0 {
+// replacePasteNewlines replaces \n with U+2028 placeholders.
+// In raw mode (during readline), Enter sends \r and paste newlines are \n.
+// So \n is ALWAYS from paste, never from Enter — safe to replace unconditionally.
+// Also handles \r\n (Windows line endings in paste) as a single placeholder.
+func replacePasteNewlines(data []byte) []byte {
+	if !bytes.Contains(data, []byte{'\n'}) {
 		return data
 	}
-	// Quick check: any newline before the last byte?
-	last := len(data) - 1
-	found := false
-	for i := 0; i < last; i++ {
-		if data[i] == '\n' || data[i] == '\r' {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return data
-	}
-
 	var out bytes.Buffer
-	out.Grow(len(data) + 8) // slight growth for multi-byte U+2028
+	out.Grow(len(data) + 8)
 	for i := 0; i < len(data); i++ {
-		if data[i] == '\n' || data[i] == '\r' {
-			// Check if this newline (or \r\n pair) is at the end of the chunk.
-			// Trailing newline = Enter key, preserve it.
-			end := i
-			if data[i] == '\r' && i+1 < len(data) && data[i+1] == '\n' {
-				end = i + 1
-			}
-			if end >= last {
-				// At or past the last byte — preserve trailing newline(s)
-				out.Write(data[i:])
-				break
-			}
-			// Mid-chunk newline — from a paste, replace with placeholder
-			if data[i] == '\r' && i+1 < len(data) && data[i+1] == '\n' {
-				i++ // skip \r, \n is consumed below
-			}
+		if data[i] == '\n' {
 			writeRune(&out, pasteNewline)
-			continue
+		} else if data[i] == '\r' && i+1 < len(data) && data[i+1] == '\n' {
+			// \r\n → single placeholder
+			writeRune(&out, pasteNewline)
+			i++ // skip the \n
+		} else {
+			out.WriteByte(data[i])
 		}
-		out.WriteByte(data[i])
 	}
 	return out.Bytes()
 }
