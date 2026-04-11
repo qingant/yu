@@ -161,6 +161,7 @@ func (s *Sandbox) launch() (int, error) {
 			WorkspaceDir: config.WorkspaceDir(s.ProjectDir),
 			AllowPaths:   allowPaths,
 			DenyPaths:    fsjail.DefaultDenyPaths(),
+			DenyHomeDir:  s.isBuiltinAgent(), // tight for built-in, loose for external
 		}
 		gen := &fsjail.DarwinGenerator{}
 		profilePath, err := gen.Generate(profile)

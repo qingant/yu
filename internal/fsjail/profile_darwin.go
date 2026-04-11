@@ -36,37 +36,37 @@ func (d *DarwinGenerator) Generate(p Profile) (string, error) {
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n\n")
 
-	// Deny the entire home directory — agent shouldn't read user files
-	sb.WriteString("; Deny home directory\n")
-	sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", home))
-	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n\n", home))
+	if p.DenyHomeDir {
+		// Tight mode (built-in agent): deny entire home, re-allow specifics
+		sb.WriteString("; Deny home directory\n")
+		sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", home))
+		sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n\n", home))
 
-	// Re-allow project directory (read-write)
-	sb.WriteString("; Allow project directory\n")
-	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.ProjectDir))
-	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.ProjectDir))
+		// Re-allow project directory (read-write)
+		sb.WriteString("; Allow project directory\n")
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.ProjectDir))
+		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.ProjectDir))
 
-	// Re-allow sandbox tmp directory (read-write)
-	sb.WriteString("; Allow sandbox tmp\n")
-	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.TmpDir))
-	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.TmpDir))
+		// Re-allow sandbox tmp directory (read-write)
+		sb.WriteString("; Allow sandbox tmp\n")
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.TmpDir))
+		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.TmpDir))
 
-	// Re-allow only this project's workspace dir (not all of ~/.yu/)
-	if p.WorkspaceDir != "" {
-		sb.WriteString("; Allow this project's workspace\n")
-		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.WorkspaceDir))
-		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.WorkspaceDir))
+		// Re-allow workspace dir
+		if p.WorkspaceDir != "" {
+			sb.WriteString("; Allow this project's workspace\n")
+			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.WorkspaceDir))
+			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.WorkspaceDir))
+		}
+
+		// Re-allow agent-specific paths (config dirs, binary dirs)
+		for _, allowPath := range p.AllowPaths {
+			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", allowPath))
+			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", allowPath))
+		}
 	}
 
-	// Re-allow agent-specific paths (config dirs, binary dirs).
-	// Config dirs (e.g. ~/.claude, ~/.codex) need read+write for session
-	// history, settings, etc. Binary dirs need read for execution.
-	for _, allowPath := range p.AllowPaths {
-		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", allowPath))
-		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", allowPath))
-	}
-
-	// Still explicitly deny credential paths (belt + suspenders)
+	// Deny credential paths — always applied regardless of mode
 	sb.WriteString("\n; Credential directories — always denied\n")
 	for _, path := range p.DenyPaths {
 		info, err := os.Stat(path)
