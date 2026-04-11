@@ -8,7 +8,10 @@ type Profile struct {
 	// TmpDir is the sandbox's temporary directory (read-write).
 	TmpDir string
 
-	// DenyPaths are paths the agent cannot access.
+	// AllowPaths are additional paths to allow (e.g. agent config dirs).
+	AllowPaths []string
+
+	// DenyPaths are paths the agent cannot access (credential dirs).
 	DenyPaths []string
 }
 

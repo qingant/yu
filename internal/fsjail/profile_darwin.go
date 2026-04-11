@@ -27,19 +27,47 @@ func DefaultDenyPaths() []string {
 }
 
 // Generate creates a sandbox-exec profile file.
+// Strategy: allow default → deny home dir → re-allow project/tmp/workspace.
+// In sandbox-exec, later rules take precedence over earlier ones.
 func (d *DarwinGenerator) Generate(p Profile) (string, error) {
+	home, _ := os.UserHomeDir()
 	var sb strings.Builder
 
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n\n")
 
-	// Deny credential paths
-	sb.WriteString("; Credential directories — agent cannot access these\n")
+	// Deny the entire home directory — agent shouldn't read user files
+	sb.WriteString("; Deny home directory\n")
+	sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", home))
+	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n\n", home))
+
+	// Re-allow project directory (read-write)
+	sb.WriteString("; Allow project directory\n")
+	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.ProjectDir))
+	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.ProjectDir))
+
+	// Re-allow sandbox tmp directory (read-write)
+	sb.WriteString("; Allow sandbox tmp\n")
+	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.TmpDir))
+	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.TmpDir))
+
+	// Re-allow workspace config directory (~/.yu/) for sessions, snapshots, etc.
+	yuDir := filepath.Join(home, ".yu")
+	sb.WriteString("; Allow yu workspace config\n")
+	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", yuDir))
+	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", yuDir))
+
+	// Re-allow agent config directories that were symlinked into sandbox HOME
+	// (e.g. ~/.claude, ~/.codex) — these are needed by external agents
+	for _, allowPath := range p.AllowPaths {
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", allowPath))
+	}
+
+	// Still explicitly deny credential paths (belt + suspenders)
+	sb.WriteString("\n; Credential directories — always denied\n")
 	for _, path := range p.DenyPaths {
-		// Check if it's a file or directory to use the right filter
 		info, err := os.Stat(path)
 		if err != nil {
-			// Path doesn't exist, deny as subpath anyway (defensive)
 			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", path))
 			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", path))
 			continue

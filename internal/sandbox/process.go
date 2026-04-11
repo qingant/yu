@@ -117,9 +117,19 @@ func (s *Sandbox) launch() (int, error) {
 
 	// Apply filesystem jail on supported platforms
 	if runtime.GOOS == "darwin" {
+		// Collect agent config dirs that need to be accessible
+		var allowPaths []string
+		realHome, _ := os.UserHomeDir()
+		if info := s.agentInfo(); info != nil {
+			for _, dir := range info.ConfigDirs {
+				allowPaths = append(allowPaths, filepath.Join(realHome, dir))
+			}
+		}
+
 		profile := fsjail.Profile{
 			ProjectDir: s.ProjectDir,
 			TmpDir:     s.TmpDir,
+			AllowPaths: allowPaths,
 			DenyPaths:  fsjail.DefaultDenyPaths(),
 		}
 		gen := &fsjail.DarwinGenerator{}
