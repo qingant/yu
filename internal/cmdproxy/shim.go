@@ -23,7 +23,11 @@ func GenerateShims(shimsDir, socketPath, yuBin string, commands []string) error 
 		if err := os.WriteFile(shimPath, []byte(content), 0755); err != nil {
 			return fmt.Errorf("writing shim for %s: %w", cmd, err)
 		}
+		// Make shim read-only+exec so sandboxed agent cannot overwrite it
+		os.Chmod(shimPath, 0555)
 	}
+	// Make shims directory read-only to prevent creating new files
+	os.Chmod(shimsDir, 0555)
 	return nil
 }
 

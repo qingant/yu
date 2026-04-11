@@ -2,7 +2,6 @@ package netproxy
 
 import (
 	"bufio"
-	"crypto/rand"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -40,20 +39,16 @@ type APIRoute struct {
 // replacing dummy credentials with real ones. No MITM, no certs.
 type APIProxy struct {
 	Addr   string // listen address
-	Secret string // request must include X-Yu-Proxy-Secret header
 	Routes []APIRoute
 
 	listener net.Listener
 	auditFn  func(method, url string, status int, note string)
 }
 
-// NewAPIProxy creates a local API proxy with a random secret.
+// NewAPIProxy creates a local API proxy.
 func NewAPIProxy() *APIProxy {
-	b := make([]byte, 16)
-	rand.Read(b)
 	return &APIProxy{
-		Addr:   "127.0.0.1:0",
-		Secret: fmt.Sprintf("%x", b),
+		Addr: "127.0.0.1:0",
 	}
 }
 
@@ -276,7 +271,7 @@ var authHeaders = map[string]bool{
 	"Authorization":     true,
 	"X-Api-Key":         true,
 	"X-Goog-Api-Key":    true,
-	"X-Yu-Proxy-Secret": true, // internal — never forward to upstream
+
 }
 
 func (ap *APIProxy) copyHeaders(src, dst http.Header, route *APIRoute) {

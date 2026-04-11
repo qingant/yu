@@ -408,9 +408,6 @@ func fetchCustomModels(baseURL, apiKey string) []modelInfo {
 		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	if secret := os.Getenv("YU_PROXY_SECRET"); secret != "" {
-		req.Header.Set("X-Yu-Proxy-Secret", secret)
-	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
