@@ -189,6 +189,10 @@ func Main() {
 	hFile := historyFile(wsDir)
 	sanitizeHistoryFile(hFile)
 
+	// Enable bracketed paste: newlines in pasted text are replaced with a
+	// placeholder so readline doesn't treat them as Enter.
+	pasteIn := newPasteStdin()
+
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:                 promptString(model, bgManager.RunningCount()),
 		HistoryFile:            hFile,
@@ -199,6 +203,7 @@ func Main() {
 		EOFPrompt:              "exit",
 		HistorySearchFold:      true,
 		FuncFilterInputRune:    filterInputRune,
+		Stdin:                  pasteIn,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "readline init failed: %v\n", err)
@@ -357,8 +362,10 @@ func Main() {
 // readMultiLine reads input with multi-line support.
 //
 // Multi-line modes:
-//  1. Backslash continuation: line ending with \ continues on next line
-//  2. Triple-backtick block: start a line with ``` to enter multi-line mode,
+//  1. Paste: pasted text containing newlines is captured as a single input
+//     (via bracketed paste — newlines are preserved automatically)
+//  2. Backslash continuation: line ending with \ continues on next line
+//  3. Triple-backtick block: start a line with ``` to enter multi-line mode,
 //     end with a line that is just ``` to submit
 //
 // In all cases, Ctrl+C cancels the multi-line input.
@@ -367,7 +374,14 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string,
 	if err != nil {
 		return "", err
 	}
+	// Restore newlines from paste placeholder (U+2028 → \n)
+	line = restorePasteNewlines(line)
 	line = strings.TrimRight(line, " \t")
+
+	// If paste contained newlines, they're already in the line — return as-is
+	if strings.Contains(line, "\n") {
+		return strings.TrimSpace(line), nil
+	}
 
 	// Triple-backtick block mode: collect until closing ```
 	if strings.HasPrefix(strings.TrimSpace(line), "```") {
@@ -387,6 +401,7 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string,
 				}
 				break
 			}
+			next = restorePasteNewlines(next)
 			if strings.TrimSpace(next) == "```" {
 				break
 			}
@@ -407,12 +422,20 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string,
 			}
 			break
 		}
+		next = restorePasteNewlines(next)
 		line = strings.TrimRight(next, " \t")
 	}
 	lines = append(lines, line)
 
 	input := strings.TrimSpace(strings.Join(lines, "\n"))
 	return input, nil
+}
+
+// restorePasteNewlines converts U+2028 (LINE SEPARATOR) placeholders back to
+// real newlines. These placeholders are inserted by pasteStdin during bracketed
+// paste to prevent readline from treating pasted newlines as Enter.
+func restorePasteNewlines(s string) string {
+	return strings.ReplaceAll(s, string(pasteNewline), "\n")
 }
 
 // expandAtFiles finds @path references in input and expands them to file content.
