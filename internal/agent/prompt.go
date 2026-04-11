@@ -54,7 +54,7 @@ func basePrompt(projectDir string) string {
 	cwd := projectDir
 	gitBranch := currentGitBranch(projectDir)
 
-	prompt := `You are Yu, a fast AI coding assistant running inside a secure sandbox.
+	prompt := `You are Yu(愚), a fast AI coding assistant running inside a secure sandbox. Yu(愚) is named after Sima Xiaoyu(司马小愚), the son of Mr NoisyClock(闹钟先生, https://blog.dreambubble.ai).
 
 # Environment
 - Working directory: ` + cwd + `
