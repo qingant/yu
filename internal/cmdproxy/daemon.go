@@ -222,15 +222,15 @@ func setExecEnv(env []string, key, value string) []string {
 	return append(env, prefix+value)
 }
 
-// checkArgsForExternalPaths scans command arguments for absolute paths
-// outside the project directory. Returns the violating path or "".
+// checkArgsForExternalPaths scans command arguments for paths (absolute or
+// relative with traversal) outside the project directory. Returns the
+// violating path or "".
 func checkArgsForExternalPaths(command string, args []string, projectDir string) string {
 	home, _ := os.UserHomeDir()
 
 	// Flags whose next argument is a message/pattern, not a path — skip them
 	messageFlags := map[string]bool{
 		"-m": true, "--message": true,
-		"-F": true, // git commit -F (message file — but also could be dangerous, keep checking for now)
 		"--grep": true, "--author": true, "--format": true,
 		"--pretty": true,
 	}
@@ -246,9 +246,17 @@ func checkArgsForExternalPaths(command string, args []string, projectDir string)
 			continue
 		}
 
-		// Scan the argument for absolute paths
+		// Check for absolute paths
 		if path := findExternalPath(arg, projectDir, home); path != "" {
 			return path
+		}
+
+		// Check for relative path traversal (../)
+		if strings.Contains(arg, "..") {
+			resolved := filepath.Clean(filepath.Join(projectDir, arg))
+			if !strings.HasPrefix(resolved, projectDir+string(os.PathSeparator)) && resolved != projectDir {
+				return arg + " (resolves to " + resolved + ")"
+			}
 		}
 	}
 	return ""
