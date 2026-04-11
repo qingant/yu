@@ -137,6 +137,19 @@ func Main() {
 		}
 	}()
 
+	// Parent process watchdog — if sandbox exits, we must exit too.
+	// When parent dies on macOS/Linux, ppid becomes 1 (launchd/init).
+	parentPID := os.Getppid()
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			if os.Getppid() != parentPID {
+				bgManager.StopAll()
+				os.Exit(0)
+			}
+		}
+	}()
+
 	// Session resolution
 	execPrompt := os.Getenv("YU_EXEC_PROMPT")
 	var session *Session
