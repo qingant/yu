@@ -543,6 +543,11 @@ func printToolResult(name string, result ContentBlock) {
 		return
 	}
 
+	// edit_file already prints its own diff
+	if name == "edit_file" && !result.IsError {
+		return
+	}
+
 	// Limit preview
 	preview := content
 	lines := strings.Split(preview, "\n")

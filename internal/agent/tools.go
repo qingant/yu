@@ -618,6 +618,8 @@ func (e *ToolExecutor) execEditFile(input json.RawMessage) (string, bool) {
 	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
 		return fmt.Sprintf("error writing file: %v", err), true
 	}
+
+	printEditDiff(args.Path, args.OldString, args.NewString)
 	return fmt.Sprintf("Edited %s", args.Path), false
 }
 
@@ -956,4 +958,56 @@ func rawModeOn() (*term.State, error) {
 
 func rawModeOff(state *term.State) {
 	term.Restore(int(os.Stdin.Fd()), state)
+}
+
+// printEditDiff prints a colorized unified diff for an edit_file operation.
+func printEditDiff(path, oldStr, newStr string) {
+	oldLines := strings.Split(oldStr, "\n")
+	newLines := strings.Split(newStr, "\n")
+
+	// Find common prefix/suffix lines to show minimal context
+	prefix := 0
+	for prefix < len(oldLines) && prefix < len(newLines) && oldLines[prefix] == newLines[prefix] {
+		prefix++
+	}
+	oldSuffix, newSuffix := len(oldLines)-1, len(newLines)-1
+	for oldSuffix > prefix && newSuffix > prefix && oldLines[oldSuffix] == newLines[newSuffix] {
+		oldSuffix--
+		newSuffix--
+	}
+
+	// Context lines around changes
+	ctxStart := prefix - 3
+	if ctxStart < 0 {
+		ctxStart = 0
+	}
+	oldEnd := oldSuffix + 4
+	if oldEnd > len(oldLines) {
+		oldEnd = len(oldLines)
+	}
+	newEnd := newSuffix + 4
+	if newEnd > len(newLines) {
+		newEnd = len(newLines)
+	}
+
+	fmt.Printf("    %s--- %s%s\n", dim, path, reset)
+	fmt.Printf("    %s+++ %s%s\n", dim, path, reset)
+
+	// Print context before
+	for i := ctxStart; i < prefix; i++ {
+		fmt.Printf("    %s %s%s\n", dim, oldLines[i], reset)
+	}
+	// Print removed lines
+	for i := prefix; i <= oldSuffix; i++ {
+		fmt.Printf("    %s-%s%s\n", red, oldLines[i], reset)
+	}
+	// Print added lines
+	for i := prefix; i <= newSuffix; i++ {
+		fmt.Printf("    %s+%s%s\n", green, newLines[i], reset)
+	}
+	// Print context after
+	afterStart := oldSuffix + 1
+	for i := afterStart; i < oldEnd; i++ {
+		fmt.Printf("    %s %s%s\n", dim, oldLines[i], reset)
+	}
 }
