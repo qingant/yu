@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/taoai/yu/internal/copilot"
 )
 
 // commandResult tells the main loop what to do after a command.
@@ -165,6 +167,12 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 			fmt.Printf("Stopped #%d\n", id)
 		}
 
+	case "/copilot-login":
+		doCopilotLogin()
+
+	case "/copilot-logout":
+		doCopilotLogout()
+
 	case "/rollback":
 		doRollback(projectDir)
 
@@ -203,6 +211,8 @@ Commands:
   /remember <text>   Save a note to memory
   /memory            Show saved memory
   /forget            Clear all memory
+  /copilot-login     Log in to GitHub Copilot
+  /copilot-logout    Log out of GitHub Copilot
   /exit              Exit
 
   !<command>         Run shell command directly (output visible to model)
@@ -247,6 +257,14 @@ var openaiModels = []modelInfo{
 	{ID: "gpt-4.1-nano", Display: "GPT-4.1 Nano"},
 }
 
+var copilotModels = []modelInfo{
+	{ID: "gpt-4o", Display: "GPT-4o"},
+	{ID: "gpt-4o-mini", Display: "GPT-4o Mini"},
+	{ID: "o3-mini", Display: "o3-mini"},
+	{ID: "o4-mini", Display: "o4-mini"},
+	{ID: "claude-sonnet-4-20250514", Display: "Claude Sonnet 4"},
+}
+
 // cached model list for custom provider (fetched from API)
 var customModelCache []modelInfo
 
@@ -283,7 +301,16 @@ func detectProviders() []providerInfo {
 		})
 	}
 
-	// 3. Yu Custom (YU_BASE_URL + YU_API_KEY or YU_API_TOKEN)
+	// 3. GitHub Copilot
+	copilotBase := os.Getenv("COPILOT_BASE_URL")
+	if copilotBase != "" {
+		providers = append(providers, providerInfo{
+			Name: "GitHub Copilot", Key: "copilot",
+			APIKey: "copilot", BaseURL: copilotBase, Protocol: "openai",
+		})
+	}
+
+	// 4. Yu Custom (YU_BASE_URL + YU_API_KEY or YU_API_TOKEN)
 	yuKey := os.Getenv("YU_API_KEY")
 	if yuKey == "" {
 		yuKey = os.Getenv("YU_API_TOKEN")
@@ -391,6 +418,8 @@ func modelsForProvider(p providerInfo) []modelInfo {
 		return anthropicModels
 	case "openai":
 		return openaiModels
+	case "copilot":
+		return copilotModels
 	case "yu-custom":
 		return fetchCustomModels(p.BaseURL, p.APIKey)
 	}
@@ -489,6 +518,38 @@ type snapshotEntry struct {
 	Trigger string
 	Summary string
 	Age     string
+}
+
+func doCopilotLogin() {
+	if copilot.IsLoggedIn() {
+		user, err := copilot.ValidateToken()
+		if err == nil {
+			fmt.Printf("Already logged in as %s.\n", user)
+			return
+		}
+		// Token invalid, re-login
+		fmt.Printf("Token expired or invalid, re-authenticating...\n")
+	}
+
+	user, err := copilot.Login(func(s string) { fmt.Print(s) })
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Copilot login failed: %v\n", err)
+		return
+	}
+	fmt.Printf("\n  ✓ Logged in as %s\n", user)
+	fmt.Printf("  Select GitHub Copilot as provider with /model\n\n")
+}
+
+func doCopilotLogout() {
+	if !copilot.IsLoggedIn() {
+		fmt.Println("Not logged in to GitHub Copilot.")
+		return
+	}
+	if err := copilot.Logout(); err != nil {
+		fmt.Fprintf(os.Stderr, "Logout failed: %v\n", err)
+		return
+	}
+	fmt.Println("Logged out of GitHub Copilot.")
 }
 
 func doRollback(projectDir string) {

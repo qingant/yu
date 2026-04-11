@@ -27,6 +27,7 @@ var slashCommands = []string{
 	"/model", "/init",
 	"/jobs", "/logs", "/kill", "/rollback", "/stats",
 	"/remember", "/memory", "/forget",
+	"/copilot-login", "/copilot-logout",
 }
 
 // stats tracks token usage for the current run.
@@ -1023,6 +1024,16 @@ func detectAPIConfig(model string) (apiKey, baseURL string) {
 	baseURL = os.Getenv("OPENAI_BASE_URL")
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
+	}
+	if apiKey != "" {
+		return
+	}
+
+	// Fallback: GitHub Copilot (if logged in and no other keys set)
+	copilotBase := os.Getenv("COPILOT_BASE_URL")
+	if copilotBase != "" {
+		apiKey = "copilot" // dummy — proxy injects real JWT
+		baseURL = copilotBase
 	}
 	return
 }

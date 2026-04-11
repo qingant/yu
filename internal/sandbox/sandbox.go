@@ -13,6 +13,7 @@ import (
 	"github.com/taoai/yu/internal/cloud"
 	"github.com/taoai/yu/internal/cmdproxy"
 	"github.com/taoai/yu/internal/config"
+	"github.com/taoai/yu/internal/copilot"
 	"github.com/taoai/yu/internal/netproxy"
 	"github.com/taoai/yu/internal/snapshot"
 )
@@ -409,6 +410,27 @@ func (s *Sandbox) configureKeyReplacements() {
 
 		yuLog("API proxy: %s → %s%s → %s",
 			strings.Join(keyNames, ","), s.apiAddr, route.PathPrefix, upstream)
+	}
+
+	// GitHub Copilot route — uses OAuth token from ~/.config/yu/copilot.json
+	if oauthToken := copilot.LoadToken(); oauthToken != "" && s.isBuiltinAgent() {
+		tm := copilot.NewTokenManager(oauthToken)
+		s.apiProxy.Routes = append(s.apiProxy.Routes, netproxy.APIRoute{
+			PathPrefix: "/copilot",
+			Upstream:   copilot.CopilotEndpoint,
+			ForceHeaderFunc: func() map[string]string {
+				jwt, err := tm.Token()
+				if err != nil {
+					yuLog("Copilot token refresh failed: %v", err)
+					return nil
+				}
+				return map[string]string{
+					"Authorization": "Bearer " + jwt,
+				}
+			},
+		})
+		s.dummyKeys["COPILOT_BASE_URL"] = fmt.Sprintf("http://%s/copilot", s.apiAddr)
+		yuLog("API proxy: Copilot → %s/copilot → %s", s.apiAddr, copilot.CopilotEndpoint)
 	}
 
 	// User-configured inject rules from .yu/config.yaml

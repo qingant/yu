@@ -33,6 +33,10 @@ type APIRoute struct {
 	// ForceHeaders: always set these headers on upstream requests,
 	// overriding whatever the agent sent (e.g. its own OAuth JWT).
 	ForceHeaders map[string]string
+
+	// ForceHeaderFunc: called per-request to get dynamic headers (e.g. auto-refreshing JWT).
+	// Merged with ForceHeaders; ForceHeaderFunc takes precedence.
+	ForceHeaderFunc func() map[string]string
 }
 
 // APIProxy is a local reverse proxy that routes agent API calls,
@@ -293,5 +297,11 @@ func (ap *APIProxy) copyHeaders(src, dst http.Header, route *APIRoute) {
 	// Set real auth from ForceHeaders — this is the ONLY source of credentials
 	for k, v := range route.ForceHeaders {
 		dst.Set(k, v)
+	}
+	// Dynamic headers (e.g. auto-refreshing Copilot JWT) override static ones
+	if route.ForceHeaderFunc != nil {
+		for k, v := range route.ForceHeaderFunc() {
+			dst.Set(k, v)
+		}
 	}
 }
