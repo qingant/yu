@@ -427,26 +427,58 @@ func printWelcome(model, projectDir string, session *Session) {
 }
 
 func printSessionHistory(messages []Message) {
+	// Build a map of tool_use_id → tool result for quick lookup
+	resultByID := map[string]ContentBlock{}
+	for _, m := range messages {
+		if m.Role == "user" {
+			for _, b := range m.Content {
+				if b.Type == "tool_result" {
+					resultByID[b.ToolUseID] = b
+				}
+			}
+		}
+	}
+
 	for _, m := range messages {
 		switch m.Role {
 		case "user":
 			for _, b := range m.Content {
 				if b.Type == "text" {
-					fmt.Printf("%syu>%s %s\n\n", boldGreen, reset, truncateHistory(b.Text, 200))
+					fmt.Printf("%syu>%s %s\n\n", boldGreen, reset, b.Text)
 				}
+				// tool_result blocks are printed inline with their tool_use below
 			}
 		case "assistant":
+			// Print text blocks through markdown renderer
+			hasText := false
 			for _, b := range m.Content {
-				switch b.Type {
-				case "text":
-					fmt.Printf("%s%s%s\n\n", dim, truncateHistory(b.Text, 500), reset)
-				case "tool_use":
-					fmt.Printf("%s  ↳ %s%s\n", dim, b.Name, reset)
+				if b.Type == "text" && b.Text != "" {
+					hasText = true
+				}
+			}
+			if hasText {
+				renderer := NewTermRenderer()
+				for _, b := range m.Content {
+					if b.Type == "text" && b.Text != "" {
+						renderer.Feed(b.Text)
+					}
+				}
+				renderer.Flush()
+				fmt.Println()
+			}
+			// Print tool calls + their results
+			for _, b := range m.Content {
+				if b.Type == "tool_use" {
+					fmt.Println()
+					printToolCall(b)
+					if result, ok := resultByID[b.ID]; ok {
+						printToolResult(b.Name, result)
+					}
 				}
 			}
 		}
 	}
-	fmt.Printf("%s─── end of history ───%s\n\n", dim, reset)
+	fmt.Printf("\n%s─── end of history ───%s\n\n", dim, reset)
 }
 
 func truncateHistory(s string, maxLen int) string {
