@@ -126,6 +126,18 @@ func (s *Sandbox) launch() (int, error) {
 			}
 		}
 
+		// Resolve the command binary and allow its directory.
+		// The binary may be in ~/.local/bin or another home subdirectory
+		// that the sandbox would otherwise deny.
+		if binPath, err := exec.LookPath(command[0]); err == nil {
+			if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
+				binDir := filepath.Dir(resolved)
+				if strings.HasPrefix(binDir, realHome) {
+					allowPaths = append(allowPaths, binDir)
+				}
+			}
+		}
+
 		profile := fsjail.Profile{
 			ProjectDir:   s.ProjectDir,
 			TmpDir:       s.TmpDir,
