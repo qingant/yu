@@ -71,6 +71,9 @@ func Main() {
 
 	model := os.Getenv("YU_MODEL")
 	if model == "" {
+		model = loadActiveModel(wsDir)
+	}
+	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
 
@@ -204,6 +207,7 @@ func Main() {
 						provider = NewProvider(model, newKey, newBase, maxTokens)
 					}
 				}
+				saveActiveModel(wsDir, model)
 				fmt.Printf("\nSwitched to %s%s%s\n", bold, model, reset)
 			}
 			if result.handled {
@@ -853,6 +857,25 @@ func execDirectCommand(command, projectDir string) string {
 	}
 
 	return output.String()
+}
+
+func loadActiveModel(wsDir string) string {
+	if wsDir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(wsDir, "active-model"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func saveActiveModel(wsDir, model string) {
+	if wsDir == "" {
+		return
+	}
+	os.MkdirAll(wsDir, 0700)
+	os.WriteFile(filepath.Join(wsDir, "active-model"), []byte(model+"\n"), 0600)
 }
 
 func findMemoryFile(wsDir string) string {
