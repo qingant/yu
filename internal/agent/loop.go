@@ -614,6 +614,11 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 		st.totalCacheRead.Add(int64(response.CacheReadTokens))
 		st.totalCacheWrite.Add(int64(response.CacheWriteTokens))
 
+		// Don't append an empty assistant message if the turn was interrupted
+		if len(response.Blocks) == 0 && ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+
 		*messages = append(*messages, Message{
 			Role:    "assistant",
 			Content: response.Blocks,
@@ -1075,6 +1080,11 @@ func sanitizeMessages(messages []Message) []Message {
 	result := make([]Message, 0, len(messages))
 
 	for i, msg := range messages {
+		// Skip messages with nil/empty content (from interrupted turns)
+		if len(msg.Content) == 0 {
+			continue
+		}
+
 		if msg.Role == "user" {
 			// Check if this message has tool_result blocks
 			hasToolResult := false
