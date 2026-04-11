@@ -211,6 +211,10 @@ func Main() {
 	}
 	defer rl.Close()
 
+	// Re-enable bracketed paste after readline has entered raw mode
+	// (belt and suspenders — raw mode shouldn't reset it, but some terminals do)
+	os.Stdout.Write([]byte("\033[?2004h"))
+
 	// Welcome banner
 	printWelcome(model, projectDir, session)
 
@@ -319,16 +323,23 @@ func Main() {
 		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnStart := time.Now()
 
-		// Per-turn context: Ctrl+C cancels just this turn
+		// Per-turn context: ESC or Ctrl+C cancels just this turn.
+		// In raw mode Ctrl+C is byte 0x03 (not SIGINT), so we read stdin directly.
 		thisTurnCtx, thisTurnCancel := context.WithCancel(ctx)
 		turnCancel.Store(&thisTurnCancel)
 		inTurn.Store(true)
 
+		watchCh := pasteIn.WatchForCancel(thisTurnCtx, thisTurnCancel)
 		lastInput, turnErr := agentTurn(thisTurnCtx, provider, system, &session.Messages, tools, executor, &st)
 
 		inTurn.Store(false)
 		turnCancel.Store(nil)
 		thisTurnCancel()
+
+		// Wait for watcher to finish and feed buffered bytes back to readline
+		if extra := <-watchCh; len(extra) > 0 {
+			pasteIn.Inject(extra)
+		}
 
 		if turnErr != nil {
 			if thisTurnCtx.Err() != nil {
