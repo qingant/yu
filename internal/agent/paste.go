@@ -227,6 +227,20 @@ func replaceMidChunkNewlines(data []byte) []byte {
 	return out.Bytes()
 }
 
+// DrainStale discards any bytes currently waiting in os.Stdin without blocking.
+// Call before WatchForCancel to prevent stale escape sequences from triggering
+// false cancellations.
+func (p *pasteStdin) DrainStale() {
+	stdinFile, ok := p.real.(*os.File)
+	if !ok {
+		return
+	}
+	stdinFile.SetReadDeadline(time.Now()) // deadline in the past → immediate return
+	drain := make([]byte, 256)
+	stdinFile.Read(drain) // discard whatever was waiting
+	stdinFile.SetReadDeadline(time.Time{})
+}
+
 // Inject prepends data into the pasteStdin buffer so the next Read returns it.
 // Used to feed back bytes captured by the turn watcher.
 func (p *pasteStdin) Inject(data []byte) {

@@ -329,6 +329,11 @@ func Main() {
 		turnCancel.Store(&thisTurnCancel)
 		inTurn.Store(true)
 
+		// Drain any stale bytes from stdin before the watcher starts.
+		// Leftover escape sequences from terminal interactions would
+		// otherwise cause false cancellations.
+		pasteIn.DrainStale()
+
 		watchCh := pasteIn.WatchForCancel(thisTurnCtx, thisTurnCancel)
 		lastInput, turnErr := agentTurn(thisTurnCtx, provider, system, &session.Messages, tools, executor, &st)
 
