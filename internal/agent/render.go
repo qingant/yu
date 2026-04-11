@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 )
 
 // TermRenderer processes streaming markdown text and renders it for the terminal.
@@ -300,16 +299,53 @@ func replaceInlinePattern(text, delim, open, close string) string {
 }
 
 func displayWidth(s string) int {
-	return utf8.RuneCountInString(s)
+	w := 0
+	for _, r := range s {
+		if isWideRune(r) {
+			w += 2
+		} else {
+			w++
+		}
+	}
+	return w
+}
+
+// isWideRune returns true for CJK and other East Asian wide characters
+// that occupy 2 columns in a terminal.
+func isWideRune(r rune) bool {
+	return (r >= 0x1100 && r <= 0x115F) || // Hangul Jamo
+		r == 0x2329 || r == 0x232A || // angle brackets
+		(r >= 0x2E80 && r <= 0x303E) || // CJK radicals, Kangxi, ideographic
+		(r >= 0x3040 && r <= 0x33BF) || // Hiragana, Katakana, Bopomofo, CJK compat
+		(r >= 0x3400 && r <= 0x4DBF) || // CJK Unified Ext A
+		(r >= 0x4E00 && r <= 0xA4CF) || // CJK Unified, Yi
+		(r >= 0xA960 && r <= 0xA97C) || // Hangul Jamo Extended-A
+		(r >= 0xAC00 && r <= 0xD7A3) || // Hangul Syllables
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK Compatibility Ideographs
+		(r >= 0xFE30 && r <= 0xFE6F) || // CJK Compatibility Forms
+		(r >= 0xFF01 && r <= 0xFF60) || // Fullwidth Forms
+		(r >= 0xFFE0 && r <= 0xFFE6) || // Fullwidth Signs
+		(r >= 0x20000 && r <= 0x2FFFD) || // CJK Ext B-F
+		(r >= 0x30000 && r <= 0x3FFFD) // CJK Ext G+
 }
 
 func truncateToWidth(s string, maxWidth int) string {
-	runes := []rune(s)
-	if len(runes) <= maxWidth {
+	if displayWidth(s) <= maxWidth {
 		return s
 	}
 	if maxWidth <= 1 {
 		return "…"
 	}
-	return string(runes[:maxWidth-1]) + "…"
+	w := 0
+	for i, r := range s {
+		rw := 1
+		if isWideRune(r) {
+			rw = 2
+		}
+		if w+rw > maxWidth-1 {
+			return s[:i] + "…"
+		}
+		w += rw
+	}
+	return s
 }
