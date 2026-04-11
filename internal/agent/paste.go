@@ -33,12 +33,13 @@ const pasteNewline = '\u2028'
 //
 // In both cases, readMultiLine restores U+2028 → \n after readline returns.
 type pasteStdin struct {
-	real         io.Reader
-	mu           sync.Mutex
-	buf          []byte       // leftover bytes from last read
-	inPaste      bool
-	matchBuf     []byte       // partial match buffer for escape sequences
-	pasteContent bytes.Buffer // content during active bracketed paste
+	real              io.Reader
+	mu                sync.Mutex
+	buf               []byte       // leftover bytes from last read
+	inPaste           bool
+	matchBuf          []byte       // partial match buffer for escape sequences
+	pasteContent      bytes.Buffer // content during active bracketed paste
+	disableSyncOutput bool         // disable synchronized output on next Read
 }
 
 // newPasteStdin creates a paste-aware stdin wrapper and enables bracketed
@@ -48,9 +49,25 @@ func newPasteStdin() *pasteStdin {
 	return &pasteStdin{real: os.Stdin}
 }
 
+// Synchronized output escape sequences (DEC Private Mode 2026).
+// Tells the terminal to buffer output and render once when disabled.
+// Supported by iTerm2, Kitty, WezTerm; ignored by terminals without support.
+var (
+	syncOutputBegin = []byte("\033[?2026h")
+	syncOutputEnd   = []byte("\033[?2026l")
+)
+
 func (p *pasteStdin) Read(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// After returning paste content, the next Read means readline has
+	// finished processing it. End synchronized output so the terminal
+	// renders the final state in one frame.
+	if p.disableSyncOutput {
+		p.disableSyncOutput = false
+		os.Stdout.Write(syncOutputEnd)
+	}
 
 	// Drain leftover buffer first
 	if len(p.buf) > 0 {
@@ -74,6 +91,7 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 			p.matchBuf = nil
 		}
 
+		wasPasting := p.inPaste
 		out := p.process(data)
 
 		// Mid-paste or partial escape sequence: loop to read more
@@ -84,6 +102,14 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 		// Replace \n with placeholder (works for both bracketed and
 		// non-bracketed paste — in raw mode \n is never Enter)
 		out = replacePasteNewlines(out)
+
+		// If paste content was just released, enable synchronized output
+		// so the terminal buffers readline's character-by-character redraws
+		// and renders the final state in one frame.
+		if wasPasting && !p.inPaste && len(out) > 0 {
+			os.Stdout.Write(syncOutputBegin)
+			p.disableSyncOutput = true
+		}
 
 		n = copy(b, out)
 		if n < len(out) {
