@@ -75,6 +75,8 @@ func (s *Session) Save(wsDir string) error {
 }
 
 // LoadSession reads a session from disk by ID.
+// It sanitizes all message content to strip ANSI escapes and control characters
+// that may have been persisted by older versions.
 func LoadSession(wsDir, id string) (*Session, error) {
 	path := filepath.Join(wsDir, "sessions", id+".json")
 	data, err := os.ReadFile(path)
@@ -85,7 +87,29 @@ func LoadSession(wsDir, id string) (*Session, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+	sanitizeSessionMessages(&s)
 	return &s, nil
+}
+
+// sanitizeSessionMessages strips control characters from all message content
+// in a session. This cleans up tool results (and other text) that were saved
+// with ANSI escapes by older versions.
+func sanitizeSessionMessages(s *Session) {
+	for i := range s.Messages {
+		for j := range s.Messages[i].Content {
+			b := &s.Messages[i].Content[j]
+			// Clean text blocks
+			if b.Text != "" {
+				b.Text = stripControlChars(b.Text)
+			}
+			// Clean tool_result content (stored as string)
+			if b.Type == "tool_result" {
+				if content, ok := b.Content.(string); ok && content != "" {
+					b.Content = stripControlChars(content)
+				}
+			}
+		}
+	}
 }
 
 // LoadLatestSession returns the most recently updated session, or nil.

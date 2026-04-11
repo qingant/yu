@@ -286,11 +286,12 @@ func Main() {
 			shellCmd = strings.TrimSpace(shellCmd)
 			if shellCmd != "" {
 				output := execDirectCommand(shellCmd, projectDir)
-				// Add to conversation so the model can see it
+				// Add to conversation so the model can see it (strip control chars so
+				// ANSI escapes from colored command output don't pollute the context)
 				session.Messages = append(session.Messages, Message{
 					Role: "user",
 					Content: []ContentBlock{
-						{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, output)},
+						{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, stripControlChars(output))},
 					},
 				})
 				if wsDir != "" {

@@ -171,6 +171,8 @@ func toolDefs() []ToolDef {
 }
 
 // ExecuteTools runs tool calls in parallel and returns results.
+// Tool output is sanitized (ANSI escapes and control chars stripped) before
+// being stored in the conversation history sent to the model.
 func (e *ToolExecutor) ExecuteTools(blocks []ContentBlock) []ContentBlock {
 	results := make([]ContentBlock, len(blocks))
 	var wg sync.WaitGroup
@@ -182,7 +184,7 @@ func (e *ToolExecutor) ExecuteTools(blocks []ContentBlock) []ContentBlock {
 			results[i] = ContentBlock{
 				Type:      "tool_result",
 				ToolUseID: b.ID,
-				Content:   output,
+				Content:   stripControlChars(output),
 				IsError:   isErr,
 			}
 		}(i, block)
