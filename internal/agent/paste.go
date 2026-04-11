@@ -2,11 +2,9 @@ package agent
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"sync"
-	"time"
 )
 
 // Bracketed paste escape sequences.
@@ -227,22 +225,7 @@ func replaceMidChunkNewlines(data []byte) []byte {
 	return out.Bytes()
 }
 
-// DrainStale discards any bytes currently waiting in os.Stdin without blocking.
-// Call before WatchForCancel to prevent stale escape sequences from triggering
-// false cancellations.
-func (p *pasteStdin) DrainStale() {
-	stdinFile, ok := p.real.(*os.File)
-	if !ok {
-		return
-	}
-	stdinFile.SetReadDeadline(time.Now()) // deadline in the past → immediate return
-	drain := make([]byte, 256)
-	stdinFile.Read(drain) // discard whatever was waiting
-	stdinFile.SetReadDeadline(time.Time{})
-}
-
 // Inject prepends data into the pasteStdin buffer so the next Read returns it.
-// Used to feed back bytes captured by the turn watcher.
 func (p *pasteStdin) Inject(data []byte) {
 	if len(data) == 0 {
 		return
@@ -252,88 +235,7 @@ func (p *pasteStdin) Inject(data []byte) {
 	p.buf = append(data, p.buf...)
 }
 
-// WatchForCancel reads from stdin during an agent turn, looking for ESC (0x1B)
-// or Ctrl-C (0x03). If detected, calls cancel. Any other bytes are buffered
-// and returned when the context is done. The caller must inject the returned
-// bytes back via Inject.
-//
-// ESC detection uses a 50ms delay to distinguish standalone ESC from escape
-// sequences (arrow keys send ESC + '[' + letter). Ctrl-C cancels immediately.
-func (p *pasteStdin) WatchForCancel(ctx context.Context, cancel context.CancelFunc) <-chan []byte {
-	ch := make(chan []byte, 1)
-	go func() {
-		var buf []byte
-		b := make([]byte, 64)
-		stdinFile, ok := p.real.(*os.File)
-		if !ok {
-			ch <- nil
-			return
-		}
-		defer func() {
-			stdinFile.SetReadDeadline(time.Time{})
-			ch <- buf
-		}()
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			stdinFile.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-			n, err := stdinFile.Read(b)
-			if n > 0 {
-				for i := 0; i < n; i++ {
-					c := b[i]
-					if c == 0x03 {
-						// Ctrl-C: cancel immediately
-						cancel()
-						return
-					}
-					if c == 0x1B {
-						// ESC: wait briefly to see if it's part of an escape sequence
-						// (arrow keys, function keys all start with ESC + '[')
-						if i+1 < n && b[i+1] == '[' {
-							// Escape sequence in same read — buffer all remaining bytes
-							buf = append(buf, b[i:n]...)
-							i = n // skip rest
-							continue
-						}
-						// Check if more bytes arrive within 50ms
-						stdinFile.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-						peek := make([]byte, 8)
-						pn, _ := stdinFile.Read(peek)
-						if pn > 0 && peek[0] == '[' {
-							// Escape sequence — buffer ESC + the peeked bytes
-							buf = append(buf, 0x1B)
-							buf = append(buf, peek[:pn]...)
-							continue
-						}
-						// Standalone ESC — cancel the turn
-						if pn > 0 {
-							buf = append(buf, peek[:pn]...)
-						}
-						cancel()
-						return
-					}
-					buf = append(buf, c)
-				}
-			}
-			if err != nil && !isTimeoutError(err) {
-				return
-			}
-		}
-	}()
-	return ch
-}
-
-// isTimeoutError checks if an error is a timeout (from SetReadDeadline).
-func isTimeoutError(err error) bool {
-	if err == nil {
-		return false
-	}
-	type timeout interface {
-		Timeout() bool
-	}
-	if t, ok := err.(timeout); ok {
-		return t.Timeout()
-	}
-	return false
-}
+// Note: WatchForCancel was removed. readline exits raw mode after Readline(),
+// so during agent turns the terminal is in cooked mode and Ctrl-C generates
+// SIGINT (handled by the signal handler in Main). Reading stdin during turns
+// caused false cancellations from stale terminal escape sequences.

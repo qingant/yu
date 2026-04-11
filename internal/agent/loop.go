@@ -323,28 +323,18 @@ func Main() {
 		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnStart := time.Now()
 
-		// Per-turn context: ESC or Ctrl+C cancels just this turn.
-		// In raw mode Ctrl+C is byte 0x03 (not SIGINT), so we read stdin directly.
+		// Per-turn context: Ctrl+C cancels just this turn.
+		// readline exits raw mode after Readline() returns, so during a turn
+		// the terminal is in cooked mode and Ctrl+C generates SIGINT.
 		thisTurnCtx, thisTurnCancel := context.WithCancel(ctx)
 		turnCancel.Store(&thisTurnCancel)
 		inTurn.Store(true)
 
-		// Drain any stale bytes from stdin before the watcher starts.
-		// Leftover escape sequences from terminal interactions would
-		// otherwise cause false cancellations.
-		pasteIn.DrainStale()
-
-		watchCh := pasteIn.WatchForCancel(thisTurnCtx, thisTurnCancel)
 		lastInput, turnErr := agentTurn(thisTurnCtx, provider, system, &session.Messages, tools, executor, &st)
 
 		inTurn.Store(false)
 		turnCancel.Store(nil)
 		thisTurnCancel()
-
-		// Wait for watcher to finish and feed buffered bytes back to readline
-		if extra := <-watchCh; len(extra) > 0 {
-			pasteIn.Inject(extra)
-		}
 
 		if turnErr != nil {
 			if thisTurnCtx.Err() != nil {
