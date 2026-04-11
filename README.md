@@ -46,7 +46,7 @@ yu wrap bash                         # test the sandbox yourself
 
 | Layer | How |
 |---|---|
-| **Filesystem** | macOS `sandbox-exec` — hides `~/.ssh`, `~/.aws`, `~/.gnupg`, etc. |
+| **Filesystem** | macOS `sandbox-exec` — denies access to home dir except project directory |
 | **Env vars** | Default-deny whitelist. Secrets get dummy values. |
 | **API keys** | Localhost proxy swaps dummy keys for real ones. No MITM. |
 | **Commands** | `git`, `ssh`, `gh`, `aws` intercepted by shims. Credentials injected outside sandbox. |
@@ -56,11 +56,12 @@ yu wrap bash                         # test the sandbox yourself
 
 | Threat | Status |
 |---|---|
-| Package reads `~/.ssh/id_ed25519` | **Blocked** — invisible inside sandbox |
-| MCP server reads `AWS_SECRET_ACCESS_KEY` | **Blocked** — env var doesn't exist |
-| Agent exfiltrates API key | **Blocked** — only dummy keys in sandbox |
+| Package reads `~/.ssh/id_ed25519` | **Blocked** — home dir access denied, only project dir allowed |
+| MCP server reads `AWS_SECRET_ACCESS_KEY` | **Blocked** — env var redacted |
+| Agent exfiltrates API key | **Blocked** — only dummy keys in sandbox, real keys injected by proxy |
+| Agent reads `~/Documents/` | **Blocked** — entire home dir denied except project |
 | Supply chain attack steals `GH_TOKEN` | **Blocked** — git works through credential proxy |
-| Agent breaks your code | **Auto-rollback** — snapshots before risky operations |
+| Agent breaks your code | **Auto-rollback** — `/rollback` to any snapshot |
 | Permission fatigue ("Allow?" x 100) | **Eliminated** — sandbox is the security boundary |
 
 ### Snapshots
