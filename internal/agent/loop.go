@@ -1098,9 +1098,9 @@ func autoCompact(lastInputTokens int, session *Session, provider Provider) {
 }
 
 // sanitizeMessages fixes message pairs before sending to the API.
-// Removes tool_result blocks whose tool_use_id doesn't exist in the
-// preceding assistant message. This can happen after /compact or
-// session corruption.
+// Handles two corruption cases from interrupted turns:
+//  1. Orphaned tool_result: tool_result without matching tool_use in preceding assistant message
+//  2. Orphaned tool_use: assistant has tool_use but next message lacks matching tool_result
 func sanitizeMessages(messages []Message) []Message {
 	result := make([]Message, 0, len(messages))
 
@@ -1110,8 +1110,45 @@ func sanitizeMessages(messages []Message) []Message {
 			continue
 		}
 
+		if msg.Role == "assistant" {
+			// Check for tool_use blocks that lack matching tool_results
+			var toolUseIDs []string
+			for _, b := range msg.Content {
+				if b.Type == "tool_use" && b.ID != "" {
+					toolUseIDs = append(toolUseIDs, b.ID)
+				}
+			}
+
+			if len(toolUseIDs) > 0 {
+				// Collect tool_result IDs from the next message
+				resultIDs := make(map[string]bool)
+				if i+1 < len(messages) && messages[i+1].Role == "user" {
+					for _, b := range messages[i+1].Content {
+						if b.Type == "tool_result" {
+							resultIDs[b.ToolUseID] = true
+						}
+					}
+				}
+
+				// Remove tool_use blocks without matching tool_result
+				var filtered []ContentBlock
+				for _, b := range msg.Content {
+					if b.Type == "tool_use" && b.ID != "" && !resultIDs[b.ID] {
+						continue // orphaned tool_use — skip
+					}
+					filtered = append(filtered, b)
+				}
+
+				if len(filtered) == 0 {
+					continue // entire message was orphaned — skip
+				}
+				result = append(result, Message{Role: msg.Role, Content: filtered})
+				continue
+			}
+		}
+
 		if msg.Role == "user" {
-			// Check if this message has tool_result blocks
+			// Remove tool_result blocks without matching tool_use in preceding assistant
 			hasToolResult := false
 			for _, b := range msg.Content {
 				if b.Type == "tool_result" {
@@ -1121,7 +1158,6 @@ func sanitizeMessages(messages []Message) []Message {
 			}
 
 			if hasToolResult && i > 0 {
-				// Collect valid tool_use IDs from the previous assistant message
 				validIDs := make(map[string]bool)
 				prev := messages[i-1]
 				if prev.Role == "assistant" {
@@ -1132,24 +1168,22 @@ func sanitizeMessages(messages []Message) []Message {
 					}
 				}
 
-				// Filter: keep only tool_results with valid IDs
 				var filtered []ContentBlock
 				for _, b := range msg.Content {
-					if b.Type == "tool_result" {
-						if !validIDs[b.ToolUseID] {
-							continue // orphaned tool_result — skip
-						}
+					if b.Type == "tool_result" && !validIDs[b.ToolUseID] {
+						continue // orphaned tool_result — skip
 					}
 					filtered = append(filtered, b)
 				}
 
 				if len(filtered) == 0 {
-					continue // entire message was orphaned tool_results — skip
+					continue
 				}
 				result = append(result, Message{Role: msg.Role, Content: filtered})
 				continue
 			}
 		}
+
 		result = append(result, msg)
 	}
 
