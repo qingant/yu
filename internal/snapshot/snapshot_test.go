@@ -80,20 +80,27 @@ func TestPruneTimeBucketed(t *testing.T) {
 	s := &Snapshotter{
 		ProjectDir:  dir,
 		SnapshotDir: snapDir,
-		Keep:        5,
+		Keep:        10,
 		cloner:      &platformCloner{},
 	}
 
 	now := time.Now()
+	// Create 14 snapshots to trigger pruning (Keep=10)
 	ages := []time.Duration{
-		48 * time.Hour,  // #0: 2 days old  → daily bucket
-		36 * time.Hour,  // #1: 1.5 days old
-		25 * time.Hour,  // #2: 25h old
-		3 * time.Hour,   // #3: 3h old      → hourly bucket
-		2 * time.Hour,   // #4: 2h old
-		30 * time.Minute, // #5: 30min old  → recent
-		10 * time.Minute, // #6: 10min old  → recent
-		1 * time.Minute,  // #7: 1min old   → recent
+		72 * time.Hour,   // #0: 3 days old
+		48 * time.Hour,   // #1: 2 days old
+		25 * time.Hour,   // #2: 25h old       → daily bucket
+		5 * time.Hour,    // #3: 5h old         → hourly bucket
+		3 * time.Hour,    // #4: 3h old         → hourly bucket
+		2 * time.Hour,    // #5: 2h old
+		90 * time.Minute, // #6: 1.5h old
+		50 * time.Minute, // #7: 50min old      → recent
+		30 * time.Minute, // #8: 30min old      → recent
+		20 * time.Minute, // #9: 20min old      → recent
+		10 * time.Minute, // #10: 10min old     → recent
+		5 * time.Minute,  // #11: 5min old      → recent
+		2 * time.Minute,  // #12: 2min old      → recent
+		1 * time.Minute,  // #13: 1min old      → recent
 	}
 
 	for i, age := range ages {
@@ -104,10 +111,9 @@ func TestPruneTimeBucketed(t *testing.T) {
 		os.WriteFile(filepath.Join(snapPath, ".yu-snapshot-meta"), []byte(meta), 0600)
 	}
 
-	// Verify we have 8 snapshots before prune
 	before := s.List()
-	if len(before) != 8 {
-		t.Fatalf("expected 8 snapshots before prune, got %d", len(before))
+	if len(before) != 14 {
+		t.Fatalf("expected 14 snapshots before prune, got %d", len(before))
 	}
 
 	s.prune()
@@ -119,31 +125,30 @@ func TestPruneTimeBucketed(t *testing.T) {
 		t.Logf("  #%d  age=%v  %s", sn.ID, age, sn.Summary)
 	}
 
-	if len(after) != 5 {
-		t.Fatalf("expected 5 snapshots after prune, got %d", len(after))
+	if len(after) != 10 {
+		t.Fatalf("expected 10 snapshots after prune, got %d", len(after))
 	}
 
-	// Check that the daily bucket kept a snapshot >= 24h old
 	kept := make(map[int]bool)
 	for _, sn := range after {
 		kept[sn.ID] = true
 	}
 
-	// #0 (2 days) should be the daily bucket pick (most recent >= 24h → actually #2 at 25h)
-	// The algorithm picks the most recent >= 24h, which is #2
+	// Daily bucket: #2 (25h old, most recent >= 24h)
 	if !kept[2] {
 		t.Error("expected snapshot #2 (25h old) to be kept as daily bucket")
 	}
 
-	// #3 (3h) should be the hourly bucket pick (most recent >= 1h and < 24h that's not already kept)
-	// Actually #4 is 2h old and also >= 1h — the algorithm picks most recent first,
-	// so it picks #4 (2h) for hourly bucket
-	if !kept[4] {
-		t.Error("expected snapshot #4 (2h old) to be kept as hourly bucket")
+	// Hourly bucket (2 slots): picks the 2 most recent >= 1h, < 24h
+	// That's #6 (1.5h) and #5 (2h)
+	if !kept[6] || !kept[5] {
+		t.Errorf("expected snapshots #5,#6 to be kept as hourly buckets, got kept=%v", kept)
 	}
 
-	// Most recent 3: #7, #6, #5
-	if !kept[7] || !kept[6] || !kept[5] {
-		t.Errorf("expected most recent 3 (#5,#6,#7) to be kept, got kept=%v", kept)
+	// Remaining 7 slots filled with most recent: #7 through #13
+	for i := 7; i <= 13; i++ {
+		if !kept[i] {
+			t.Errorf("expected snapshot #%d to be kept as recent, got kept=%v", i, kept)
+		}
 	}
 }

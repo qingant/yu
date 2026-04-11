@@ -70,7 +70,7 @@ type CommandsConfig struct {
 func Defaults() *Config {
 	return &Config{
 		Snapshot: SnapshotConfig{
-			Keep:            5,
+			Keep:            10,
 			QuietSeconds:    15,
 			FileThreshold:   50,
 			SizeThresholdMB: 500,

@@ -63,6 +63,11 @@ func (s *Snapshotter) Create(trigger string) (*Snapshot, error) {
 	if id > 0 {
 		prevPath := filepath.Join(s.SnapshotDir, fmt.Sprintf("%d", id-1))
 		summary = diffSummary(prevPath, snapPath)
+		// Skip storing if nothing changed
+		if summary == "no changes" {
+			os.RemoveAll(snapPath)
+			return nil, nil
+		}
 	}
 
 	// Write metadata
@@ -154,12 +159,12 @@ func (s *Snapshotter) nextID() int {
 
 // prune applies a time-bucketed retention policy.
 //
-// Strategy (max 5 snapshots kept):
-//   - Daily bucket  (1 slot): the most recent snapshot aged >= 24h
-//   - Hourly bucket (1 slot): the most recent snapshot aged >= 1h but < 24h
-//   - Recent bucket (up to 3 slots): the N most recent snapshots
+// Strategy (default max 10 snapshots kept):
+//   - Daily bucket  (1 slot):  the most recent snapshot aged >= 24h
+//   - Hourly bucket (2 slots): the 2 most recent snapshots aged >= 1h but < 24h
+//   - Recent bucket (remaining slots): the N most recent snapshots
 //
-// Any snapshot not selected is deleted. If fewer than 5 exist, nothing is pruned.
+// Any snapshot not selected is deleted.
 func (s *Snapshotter) prune() {
 	snaps := s.List() // sorted by ID ascending
 	if len(snaps) <= s.Keep {
@@ -178,12 +183,13 @@ func (s *Snapshotter) prune() {
 		}
 	}
 
-	// --- Bucket 2: hourly (>= 1h old, < 24h) — pick the most recent one ---
-	for i := len(snaps) - 1; i >= 0; i-- {
+	// --- Bucket 2: hourly (>= 1h old, < 24h) — pick the 2 most recent ---
+	hourlySlots := 2
+	for i := len(snaps) - 1; i >= 0 && hourlySlots > 0; i-- {
 		age := now.Sub(snaps[i].CreatedAt)
 		if age >= time.Hour && age < 24*time.Hour && !keep[snaps[i].ID] {
 			keep[snaps[i].ID] = true
-			break
+			hourlySlots--
 		}
 	}
 

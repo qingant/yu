@@ -277,7 +277,7 @@ func renderInline(text string) string {
 	text = replaceInlinePattern(text, "__", bold, reset)
 
 	// Inline code: `text`
-	text = replaceInlinePattern(text, "`", "\033[7m", "\033[27m") // reverse video
+	text = replaceInlinePattern(text, "`", "\033[36m", "\033[0m") // cyan for inline code
 
 	return text
 }

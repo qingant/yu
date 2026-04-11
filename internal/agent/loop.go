@@ -25,7 +25,7 @@ var slashCommands = []string{
 	"/clear", "/compact", "/new",
 	"/sessions", "/resume",
 	"/model", "/init",
-	"/jobs", "/logs", "/kill",
+	"/jobs", "/logs", "/kill", "/rollback",
 	"/remember", "/memory", "/forget",
 }
 

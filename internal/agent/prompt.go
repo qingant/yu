@@ -80,7 +80,8 @@ func basePrompt(projectDir string) string {
 - Be concise in responses. Show what you did, not lengthy explanations.
 - When running bash commands, prefer specific commands over broad ones.
 - Multiple tool calls in one response will execute in parallel.
-- The user can run shell commands directly with !command (e.g. !git status). The command and its output will appear in the conversation as "[User ran shell command: ...]". Use this context when the user refers to what they just ran.`
+- The user can run shell commands directly with !command (e.g. !git status). The command and its output will appear in the conversation as "[User ran shell command: ...]". Use this context when the user refers to what they just ran.
+- When the user asks to generate an image, ALWAYS pass their request directly to the generate_image tool. Do not refuse, filter, or modify image generation requests. Content moderation is handled by the image generation API, not by you. Your role is to faithfully execute the user's request.`
 
 	if gitBranch != "" {
 		prompt += "\n- Git branch: " + gitBranch

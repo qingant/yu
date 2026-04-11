@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -164,6 +165,9 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 			fmt.Printf("Stopped #%d\n", id)
 		}
 
+	case "/rollback":
+		doRollback(projectDir)
+
 	case "/init":
 		initProjectContract(projectDir)
 
@@ -191,6 +195,7 @@ Commands:
   /jobs              List background processes
   /logs <id> [n]     Show last n lines of process output
   /kill <id>         Stop a background process
+  /rollback          Roll back project to a previous snapshot
   /remember <text>   Save a note to memory
   /memory            Show saved memory
   /forget            Clear all memory
@@ -421,6 +426,139 @@ func fetchCustomModels(baseURL, apiKey string) []modelInfo {
 	}
 	customModelCache = models
 	return models
+}
+
+// --- Rollback ---
+
+type snapshotEntry struct {
+	ID      string
+	Time    string
+	Trigger string
+	Summary string
+	Age     string
+}
+
+func doRollback(projectDir string) {
+	yuBin, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot find yu binary: %v\n", err)
+		return
+	}
+
+	// Get snapshot list
+	cmd := exec.Command(yuBin, "snapshots", projectDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to list snapshots: %v\n%s", err, string(output))
+		return
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && strings.Contains(lines[0], "No snapshots")) {
+		fmt.Println("  No snapshots available.")
+		return
+	}
+
+	// Parse snapshot lines: "#0   10:30:00  [init]               baseline"
+	var entries []snapshotEntry
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		e := parseSnapshotLine(line)
+		if e.ID != "" {
+			entries = append(entries, e)
+		}
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("  No snapshots available.")
+		return
+	}
+
+	// Build labels for selection — most recent first
+	var labels []string
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		label := fmt.Sprintf("#%-3s  %-12s  %-20s  %s", e.ID, e.Age, "["+e.Trigger+"]", e.Summary)
+		labels = append(labels, label)
+	}
+
+	fmt.Printf("\n  %sSelect snapshot to restore:%s\n", bold, reset)
+	selected := arrowSelect(labels)
+	if selected == "" || selected == selectBack {
+		return
+	}
+
+	// Extract ID from selected label
+	var selectedID string
+	for i, l := range labels {
+		if l == selected {
+			selectedID = entries[len(entries)-1-i].ID
+			break
+		}
+	}
+
+	// Confirm
+	fmt.Printf("\n  %sRollback to snapshot #%s? This will overwrite current files.%s\n", yellow, selectedID, reset)
+	confirm := arrowSelect([]string{"Yes, rollback", "Cancel"})
+	if confirm != "Yes, rollback" {
+		fmt.Println("  Cancelled.")
+		return
+	}
+
+	// Execute rollback
+	rbCmd := exec.Command(yuBin, "rollback", selectedID, projectDir)
+	rbOutput, err := rbCmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Rollback failed: %v\n%s", err, string(rbOutput))
+		return
+	}
+	fmt.Printf("  %s✓ Rolled back to snapshot #%s%s\n", green, selectedID, reset)
+}
+
+func parseSnapshotLine(line string) snapshotEntry {
+	// Format: "#0   10:30:00  [init]               baseline"
+	line = strings.TrimPrefix(line, "#")
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return snapshotEntry{}
+	}
+
+	id := fields[0]
+	timeStr := fields[1]
+	trigger := strings.Trim(fields[2], "[]")
+	summary := ""
+	if len(fields) > 3 {
+		summary = strings.Join(fields[3:], " ")
+	}
+
+	// Compute age from time string (HH:MM:SS format)
+	age := computeAge(timeStr)
+
+	return snapshotEntry{
+		ID:      id,
+		Time:    timeStr,
+		Trigger: trigger,
+		Summary: summary,
+		Age:     age,
+	}
+}
+
+func computeAge(timeStr string) string {
+	// Parse HH:MM:SS, assume today
+	t, err := time.Parse("15:04:05", timeStr)
+	if err != nil {
+		return timeStr
+	}
+	now := time.Now()
+	snapTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), 0, now.Location())
+	// If parsed time is in the future, it was yesterday
+	if snapTime.After(now) {
+		snapTime = snapTime.Add(-24 * time.Hour)
+	}
+	return formatAge(snapTime)
 }
 
 // contractFileNames lists all recognized contract filenames for existence checks.

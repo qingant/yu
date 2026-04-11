@@ -50,9 +50,10 @@ func (w *Watcher) Start() error {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
-		if snap, err := w.snapshotter.Create("init"); err != nil {
+		snap, err := w.snapshotter.Create("init")
+		if err != nil {
 			w.logFn("Warning: initial snapshot failed: %v", err)
-		} else {
+		} else if snap != nil {
 			w.logFn("Snapshot #%d (init)", snap.ID)
 			w.mu.Lock()
 			w.lastSnapshot = time.Now()
@@ -171,6 +172,10 @@ func (w *Watcher) takeSnapshot(trigger string) {
 	snap, err := w.snapshotter.Create(trigger)
 	if err != nil {
 		w.logFn("Warning: snapshot failed (%s): %v", trigger, err)
+		return
+	}
+	if snap == nil {
+		// No changes since last snapshot — skipped
 		return
 	}
 	w.mu.Lock()
