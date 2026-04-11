@@ -124,9 +124,7 @@ func (ap *APIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for k, v := range upReq.Header {
 			val := strings.Join(v, ", ")
 			if k == "Authorization" || k == "X-Api-Key" || k == "X-Goog-Api-Key" {
-				if len(val) > 20 {
-					val = val[:20] + "..."
-				}
+				val = "[REDACTED]"
 			}
 			hdrs = append(hdrs, k+": "+val)
 		}

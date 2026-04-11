@@ -127,10 +127,11 @@ func (s *Sandbox) launch() (int, error) {
 		}
 
 		profile := fsjail.Profile{
-			ProjectDir: s.ProjectDir,
-			TmpDir:     s.TmpDir,
-			AllowPaths: allowPaths,
-			DenyPaths:  fsjail.DefaultDenyPaths(),
+			ProjectDir:   s.ProjectDir,
+			TmpDir:       s.TmpDir,
+			WorkspaceDir: config.WorkspaceDir(s.ProjectDir),
+			AllowPaths:   allowPaths,
+			DenyPaths:    fsjail.DefaultDenyPaths(),
 		}
 		gen := &fsjail.DarwinGenerator{}
 		profilePath, err := gen.Generate(profile)
@@ -298,8 +299,8 @@ func (s *Sandbox) buildEnv() []string {
 		}
 	}
 
-	// Override HOME and TMPDIR to sandbox
-	env = setEnv(env, "HOME", filepath.Join(s.TmpDir, "home"))
+	// Override HOME (persistent) and TMPDIR (ephemeral)
+	env = setEnv(env, "HOME", filepath.Join(config.WorkspaceDir(s.ProjectDir), "home"))
 	env = setEnv(env, "TMPDIR", filepath.Join(s.TmpDir, "tmp"))
 
 	// Override PATH to include shims first

@@ -51,11 +51,12 @@ func (d *DarwinGenerator) Generate(p Profile) (string, error) {
 	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.TmpDir))
 	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.TmpDir))
 
-	// Re-allow workspace config directory (~/.yu/) for sessions, snapshots, etc.
-	yuDir := filepath.Join(home, ".yu")
-	sb.WriteString("; Allow yu workspace config\n")
-	sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", yuDir))
-	sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", yuDir))
+	// Re-allow only this project's workspace dir (not all of ~/.yu/)
+	if p.WorkspaceDir != "" {
+		sb.WriteString("; Allow this project's workspace\n")
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p.WorkspaceDir))
+		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.WorkspaceDir))
+	}
 
 	// Re-allow agent config directories that were symlinked into sandbox HOME
 	// (e.g. ~/.claude, ~/.codex) — these are needed by external agents

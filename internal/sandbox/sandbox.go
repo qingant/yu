@@ -193,7 +193,7 @@ func (s *Sandbox) Run() error {
 func (s *Sandbox) setup() error {
 	dirs := []string{
 		s.TmpDir,
-		filepath.Join(s.TmpDir, "home"),
+		filepath.Join(config.WorkspaceDir(s.ProjectDir), "home"),
 		filepath.Join(s.TmpDir, "tmp"),
 		filepath.Join(s.TmpDir, "shims"),
 	}
@@ -203,9 +203,9 @@ func (s *Sandbox) setup() error {
 		}
 	}
 
-	// Symlink agent config dirs and files from real HOME into sandbox HOME
+	// Symlink agent config dirs and files from real HOME into persistent sandbox HOME
 	realHome, _ := os.UserHomeDir()
-	fakeHome := filepath.Join(s.TmpDir, "home")
+	fakeHome := filepath.Join(config.WorkspaceDir(s.ProjectDir), "home")
 	info := s.agentInfo()
 	if info != nil {
 		for _, dir := range info.ConfigDirs {
@@ -255,30 +255,8 @@ func (s *Sandbox) cleanup() {
 	os.RemoveAll(s.TmpDir)
 }
 
-// checkOrphanedFiles warns about files in fake HOME that aren't symlinks.
-// These were created by the agent but will be lost when the sandbox exits.
-func (s *Sandbox) checkOrphanedFiles() {
-	fakeHome := filepath.Join(s.TmpDir, "home")
-	entries, err := os.ReadDir(fakeHome)
-	if err != nil {
-		return
-	}
-
-	var orphaned []string
-	for _, e := range entries {
-		path := filepath.Join(fakeHome, e.Name())
-		// If it's a symlink, it points to real storage — safe
-		if target, err := os.Readlink(path); err == nil && target != "" {
-			continue
-		}
-		orphaned = append(orphaned, e.Name())
-	}
-
-	if len(orphaned) > 0 {
-		yuLogStderr("Warning: files created in sandbox HOME will be lost: %s", strings.Join(orphaned, ", "))
-		yuLogStderr("Consider adding these to the agent's ConfigDirs/ConfigFiles in yu")
-	}
-}
+// checkOrphanedFiles is a no-op — HOME is now persistent in workspace dir.
+func (s *Sandbox) checkOrphanedFiles() {}
 
 // injectAgentFlags adds bypass flags for known agents.
 func injectAgentFlags(command []string) []string {
@@ -339,7 +317,7 @@ var agentAPIRoutes = []agentAPIRoute{
 		BearerPrefix: true,
 	},
 	{
-		KeyEnvs:      []string{"YU_API_KEY"},
+		KeyEnvs:      []string{"YU_API_KEY", "YU_API_TOKEN"},
 		BaseEnv:      "YU_BASE_URL",
 		PathPrefix:   "/yu-custom",
 		HeaderName:   "Authorization",

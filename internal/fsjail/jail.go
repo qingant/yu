@@ -8,6 +8,9 @@ type Profile struct {
 	// TmpDir is the sandbox's temporary directory (read-write).
 	TmpDir string
 
+	// WorkspaceDir is the yu workspace for this project (~/.yu/workspaces/<slug>/).
+	WorkspaceDir string
+
 	// AllowPaths are additional paths to allow (e.g. agent config dirs).
 	AllowPaths []string
 
