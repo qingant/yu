@@ -256,15 +256,8 @@ var openaiModels = []modelInfo{
 	{ID: "gpt-4.1-nano", Display: "GPT-4.1 Nano"},
 }
 
-var copilotModels = []modelInfo{
-	{ID: "gpt-4o", Display: "GPT-4o"},
-	{ID: "gpt-4o-mini", Display: "GPT-4o Mini"},
-	{ID: "o3-mini", Display: "o3-mini"},
-	{ID: "o4-mini", Display: "o4-mini"},
-	{ID: "claude-sonnet-4-20250514", Display: "Claude Sonnet 4"},
-}
-
-// cached model list for custom provider (fetched from API)
+// cached model lists (fetched from API)
+var copilotModelCache []modelInfo
 var customModelCache []modelInfo
 
 // detectProviders returns available providers from environment.
@@ -418,7 +411,7 @@ func modelsForProvider(p providerInfo) []modelInfo {
 	case "openai":
 		return openaiModels
 	case "copilot":
-		return copilotModels
+		return fetchCopilotModels(p.BaseURL, p.APIKey)
 	case "yu-custom":
 		return fetchCustomModels(p.BaseURL, p.APIKey)
 	}
@@ -461,6 +454,57 @@ func fetchCustomModels(baseURL, apiKey string) []modelInfo {
 		models = append(models, modelInfo{ID: m.ID, Display: m.ID})
 	}
 	customModelCache = models
+	return models
+}
+
+func fetchCopilotModels(baseURL, apiKey string) []modelInfo {
+	if copilotModelCache != nil {
+		return copilotModelCache
+	}
+
+	url := buildOpenAIURL(baseURL, "/models")
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil
+	}
+
+	var result struct {
+		Data []struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			Capabilities struct {
+				Type string `json:"type"`
+			} `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+
+	var models []modelInfo
+	for _, m := range result.Data {
+		// Only show chat-capable models
+		if m.Capabilities.Type != "" && m.Capabilities.Type != "chat" {
+			continue
+		}
+		display := m.ID
+		if m.Name != "" {
+			display = m.Name
+		}
+		models = append(models, modelInfo{ID: m.ID, Display: display})
+	}
+	copilotModelCache = models
 	return models
 }
 
