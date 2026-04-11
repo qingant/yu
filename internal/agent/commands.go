@@ -207,6 +207,7 @@ Commands:
 
   !<command>         Run shell command directly (output visible to model)
   @<file>            Attach file content to your message (tab to complete)
+  Ctrl+G             Open $EDITOR for multi-line input
   line ending \      Continue input on next line
   ` + "```" + `...` + "```" + `           Multi-line block (start and end with ` + "```" + `)`)
 }
