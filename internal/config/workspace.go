@@ -8,8 +8,12 @@ import (
 )
 
 // WorkspaceDir returns the config directory for a given project path.
-// Located at ~/.yu/workspaces/<slug>/ where slug is derived from the absolute path.
+// Inside a sandbox, HOME is fake — use YU_WORKSPACE_DIR env var if set.
+// Otherwise: ~/.yu/workspaces/<slug>/
 func WorkspaceDir(projectDir string) string {
+	if wsDir := os.Getenv("YU_WORKSPACE_DIR"); wsDir != "" {
+		return wsDir
+	}
 	home, _ := os.UserHomeDir()
 	slug := slugify(projectDir)
 	return filepath.Join(home, ".yu", "workspaces", slug)
