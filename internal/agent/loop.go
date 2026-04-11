@@ -395,37 +395,6 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn 
 		return "", err
 	}
 
-	// Ctrl+G: open $EDITOR for multi-line input
-	if editorRequested.Swap(false) {
-		// Clear the prompt line that readline printed
-		fmt.Print("\033[A\033[2K\r")
-		typed := strings.TrimSpace(line)
-		result, err := openEditor(typed)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%seditor error: %v%s\n", red, err, reset)
-			if typed != "" {
-				return typed, nil // fall back to what was typed
-			}
-			return "", readline.ErrInterrupt
-		}
-		if result == "" {
-			return "", readline.ErrInterrupt // empty file = cancel
-		}
-		// Echo what was written
-		lines := strings.Split(result, "\n")
-		if len(lines) > 5 {
-			for _, l := range lines[:3] {
-				fmt.Printf("  %s%s%s\n", dim, l, reset)
-			}
-			fmt.Printf("  %s… (%d lines from editor)%s\n", dim, len(lines), reset)
-		} else {
-			for _, l := range lines {
-				fmt.Printf("  %s%s%s\n", dim, l, reset)
-			}
-		}
-		return result, nil
-	}
-
 	// Bracketed paste: content was buffered, readline auto-submitted ""
 	if paste := pasteIn.TakePaste(); paste != "" {
 		typed := strings.TrimSpace(line)
@@ -512,42 +481,6 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn 
 // paste to prevent readline from treating pasted newlines as Enter.
 func restorePasteNewlines(s string) string {
 	return strings.ReplaceAll(s, string(pasteNewline), "\n")
-}
-
-// openEditor opens $EDITOR (default: vim) with a temp file pre-filled with
-// the given text. Returns the file content after the editor exits.
-func openEditor(prefill string) (string, error) {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
-
-	tmp, err := os.CreateTemp("", "yu-input-*.md")
-	if err != nil {
-		return "", err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if prefill != "" {
-		tmp.WriteString(prefill + "\n")
-	}
-	tmp.Close()
-
-	cmd := exec.Command(editor, tmpPath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
 }
 
 // expandAtFiles finds @path references in input and expands them to file content.
@@ -1413,21 +1346,12 @@ func historyFile(wsDir string) string {
 	return filepath.Join(wsDir, "history")
 }
 
-// editorRequested is set by filterInputRune when Ctrl+G is pressed.
-// readMultiLine checks this flag to open $EDITOR.
-var editorRequested atomic.Bool
-
 // filterInputRune blocks NUL bytes which can corrupt readline state.
-// Ctrl+G (0x07) triggers external editor: sets flag and submits line via \r.
 // All other characters are passed through — readline needs ESC, Ctrl+keys, etc.
 // The real sanitization happens in stripControlChars when saving to history.
 func filterInputRune(r rune) (rune, bool) {
 	if r == 0 {
 		return r, false
-	}
-	if r == 0x07 { // Ctrl+G
-		editorRequested.Store(true)
-		return '\r', true // submit current line to readline
 	}
 	return r, true
 }
