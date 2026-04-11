@@ -90,8 +90,14 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 			continue
 		}
 
-		// Non-bracketed fallback: \n → U+2028
-		out = replacePasteNewlines(out)
+		// Non-bracketed fallback: \n in raw mode = paste.
+		// Buffer and auto-submit just like bracketed paste.
+		if bytes.Contains(out, []byte{'\n'}) {
+			p.completed = string(out)
+			p.sendSubmit = true
+			b[0] = '\r'
+			return 1, nil
+		}
 
 		n = copy(b, out)
 		if n < len(out) {

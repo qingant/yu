@@ -36,12 +36,17 @@ func TestBracketedPaste_Chunked(t *testing.T) {
 }
 
 func TestNonBracketedFallback(t *testing.T) {
+	// Without paste markers, \n in raw mode is still detected as paste.
+	// Auto-submits via \r, content available via TakePaste.
 	p := &pasteStdin{real: bytes.NewReader([]byte("line1\nline2"))}
 	buf := make([]byte, 1024)
 	n, _ := p.Read(buf)
-	got := string(buf[:n])
-	if got != "line1\u2028line2" {
-		t.Errorf("got %q, want %q", got, "line1\u2028line2")
+	if n != 1 || buf[0] != '\r' {
+		t.Fatalf("expected \\r, got %d bytes: %q", n, buf[:n])
+	}
+	paste := p.TakePaste()
+	if paste != "line1\nline2" {
+		t.Errorf("TakePaste = %q, want %q", paste, "line1\nline2")
 	}
 }
 
