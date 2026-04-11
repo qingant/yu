@@ -416,7 +416,7 @@ func (s *Sandbox) configureKeyReplacements() {
 	if oauthToken := copilot.LoadToken(); oauthToken != "" && s.isBuiltinAgent() {
 		tm := copilot.NewTokenManager(oauthToken)
 		s.apiProxy.Routes = append(s.apiProxy.Routes, netproxy.APIRoute{
-			PathPrefix: "/copilot",
+			PathPrefix: "/copilot/v1",
 			Upstream:   copilot.CopilotEndpoint,
 			ForceHeaderFunc: func() map[string]string {
 				jwt, err := tm.Token()
