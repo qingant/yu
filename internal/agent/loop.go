@@ -397,6 +397,8 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn 
 
 	// Ctrl+G: open $EDITOR for multi-line input
 	if editorRequested.Swap(false) {
+		// Clear the prompt line that readline printed
+		fmt.Print("\033[A\033[2K\r")
 		typed := strings.TrimSpace(line)
 		result, err := openEditor(typed)
 		if err != nil {
