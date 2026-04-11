@@ -897,8 +897,8 @@ func execDirectCommand(command, projectDir string) string {
 }
 
 // autoCompactThreshold — compact when input tokens exceed this.
-// Most models support 128k-200k context. Compact at 80k to leave room.
-const autoCompactThreshold = 80_000
+// Models with 1M context can afford much larger working sets.
+const autoCompactThreshold = 512_000
 
 // autoCompact triggers compaction when the context is getting too large.
 func autoCompact(lastInputTokens int, session *Session, provider Provider) {
