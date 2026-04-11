@@ -92,6 +92,14 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Validate CWD is within the project directory
+	cleanCwd, _ := filepath.EvalSymlinks(req.Cwd)
+	cleanProject, _ := filepath.EvalSymlinks(d.ProjectDir)
+	if cleanCwd != cleanProject && !strings.HasPrefix(cleanCwd, cleanProject+string(os.PathSeparator)) {
+		d.sendError(conn, fmt.Sprintf("working directory %q is outside project", req.Cwd), 126)
+		return
+	}
+
 	// Call pre-command hook (e.g., snapshot)
 	if d.PreCommandHook != nil {
 		d.PreCommandHook(req.Command)
