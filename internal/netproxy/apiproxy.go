@@ -82,11 +82,8 @@ func (ap *APIProxy) SetAuditFunc(fn func(method, url string, status int, note st
 }
 
 func (ap *APIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Validate proxy secret — only the sandboxed agent should know this
-	if r.Header.Get("X-Yu-Proxy-Secret") != ap.Secret {
-		http.Error(w, "invalid proxy secret", 403)
-		return
-	}
+	// Proxy only listens on localhost — the sandbox boundary is the security,
+	// not a shared secret. External agents (Claude Code) don't know the secret.
 
 	// Find matching route
 	var route *APIRoute

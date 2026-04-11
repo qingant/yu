@@ -45,7 +45,7 @@ func TestForceHeaders(t *testing.T) {
 	req, _ := http.NewRequest("POST", "http://"+addr+"/openai/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.fake-jwt")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Yu-Proxy-Secret", ap.Secret)
+	// No proxy secret needed — localhost is the security boundary
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
