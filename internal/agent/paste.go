@@ -55,8 +55,6 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 	defer p.mu.Unlock()
 
 	// After a bracketed paste completed, send \r to make readline submit.
-	// readline's buffer is empty (paste content was absorbed), so it submits "".
-	// readMultiLine then picks up the real paste via TakePaste().
 	if p.sendSubmit {
 		p.sendSubmit = false
 		b[0] = '\r'
@@ -70,53 +68,49 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 		return n, nil
 	}
 
-	// Read from real stdin
-	n, err := p.real.Read(b)
-	if n == 0 {
+	// Read loop: during bracketed paste, keep reading stdin internally
+	// until the paste ends (avoids returning 0 bytes which confuses bufio).
+	for {
+		n, err := p.real.Read(b)
+		if n == 0 {
+			return n, err
+		}
+
+		data := b[:n]
+
+		if len(p.matchBuf) > 0 {
+			data = append(p.matchBuf, data...)
+			p.matchBuf = nil
+		}
+
+		out := p.process(data)
+
+		// Paste just completed → trigger readline submit
+		if p.sendSubmit {
+			if len(out) > 0 {
+				p.buf = append(p.buf, out...)
+			}
+			p.sendSubmit = false
+			b[0] = '\r'
+			return 1, nil
+		}
+
+		// Mid-paste: content was absorbed, loop to read more from stdin
+		if p.inPaste && len(out) == 0 {
+			continue
+		}
+
+		// Non-bracketed fallback: \n is always from paste in raw mode
+		if !p.inPaste {
+			out = replacePasteNewlines(out)
+		}
+
+		n = copy(b, out)
+		if n < len(out) {
+			p.buf = append(p.buf, out[n:]...)
+		}
 		return n, err
 	}
-
-	data := b[:n]
-
-	// Prepend any partial match buffer from previous read
-	if len(p.matchBuf) > 0 {
-		data = append(p.matchBuf, data...)
-		p.matchBuf = nil
-	}
-
-	// Process: detect paste markers, buffer paste content
-	out := p.process(data)
-
-	// If paste just completed, trigger readline submit instead of
-	// returning the processed data. Any post-marker data in 'out'
-	// is saved for the next Read.
-	if p.sendSubmit {
-		if len(out) > 0 {
-			p.buf = append(p.buf, out...)
-		}
-		p.sendSubmit = false
-		b[0] = '\r'
-		return 1, nil
-	}
-
-	// If we're mid-paste, all content was absorbed into pasteContent.
-	// Return 0 so the bufio reader retries (paste data arrives fast).
-	if p.inPaste && len(out) == 0 {
-		// Return 0, nil — bufio reader will call Read again
-		return 0, nil
-	}
-
-	// Non-bracketed fallback: in raw mode, \n is always from paste
-	// (Enter sends \r). Replace with placeholder.
-	if !p.inPaste {
-		out = replacePasteNewlines(out)
-	}
-
-	n = copy(b, out)
-	if n < len(out) {
-		p.buf = append(p.buf, out[n:]...)
-	}
-	return n, err
 }
 
 func (p *pasteStdin) process(data []byte) []byte {

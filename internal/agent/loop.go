@@ -390,7 +390,20 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn 
 		} else {
 			combined = paste
 		}
-		return strings.TrimSpace(combined), nil
+		combined = strings.TrimSpace(combined)
+		// Echo pasted content so the user sees what was captured
+		lines := strings.Split(combined, "\n")
+		if len(lines) > 5 {
+			for _, l := range lines[:3] {
+				fmt.Printf("  %s%s%s\n", dim, l, reset)
+			}
+			fmt.Printf("  %s… (%d lines)%s\n", dim, len(lines), reset)
+		} else {
+			for _, l := range lines {
+				fmt.Printf("  %s%s%s\n", dim, l, reset)
+			}
+		}
+		return combined, nil
 	}
 
 	// Non-bracketed fallback: restore U+2028 placeholders to \n
