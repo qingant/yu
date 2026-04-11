@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	"golang.org/x/term"
 )
 
 // slashCommands defines all available commands for tab completion.
@@ -281,9 +282,26 @@ func Main() {
 		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnStart := time.Now()
 
-		lastInput, turnErr := agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
+		// Per-turn context: Esc cancels just this turn (not the whole session)
+		turnCtx, turnCancel := context.WithCancel(ctx)
+		stopEscWatcher := make(chan struct{})
+		go watchEsc(turnCancel, stopEscWatcher)
+
+		lastInput, turnErr := agentTurn(turnCtx, provider, system, &session.Messages, tools, executor, &st)
+
+		close(stopEscWatcher)
+		turnCancel()
+
 		if turnErr != nil {
-			fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, turnErr, reset)
+			if turnCtx.Err() != nil {
+				fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
+				// Remove the last user message so the turn can be retried
+				if len(session.Messages) > 0 && session.Messages[len(session.Messages)-1].Role == "user" {
+					session.Messages = session.Messages[:len(session.Messages)-1]
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, turnErr, reset)
+			}
 		}
 
 		elapsed := time.Since(turnStart)
@@ -362,6 +380,35 @@ func expandAtFiles(input, projectDir string) (display string, expanded string) {
 }
 
 // --- Welcome & History ---
+
+// watchEsc reads raw stdin and calls cancel if Esc (0x1B) is pressed.
+// Stops when stopCh is closed.
+func watchEsc(cancel context.CancelFunc, stopCh <-chan struct{}) {
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+	buf := make([]byte, 1)
+	for {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		os.Stdin.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		n, err := os.Stdin.Read(buf)
+		if n > 0 && buf[0] == 0x1B { // Esc
+			cancel()
+			return
+		}
+		if err != nil {
+			// timeout or EOF — keep looping
+			continue
+		}
+	}
+}
 
 func printWelcome(model, projectDir string, session *Session) {
 	fmt.Println()
