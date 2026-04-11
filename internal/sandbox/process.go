@@ -126,32 +126,15 @@ func (s *Sandbox) launch() (int, error) {
 			}
 		}
 
-		// Resolve the command binary to an absolute path and allow its
-		// directory chain. The binary may be a symlink (e.g.
-		// ~/.local/bin/claude → ~/.local/share/claude/versions/X).
-		// Allow the full parent tree so the binary and its support files
-		// are accessible inside the sandbox.
+		// Allow ~/.local (user-installed binaries, libraries, support files)
+		allowPaths = append(allowPaths, filepath.Join(realHome, ".local"))
+
+		// Resolve command to absolute path so sandbox doesn't need PATH lookup
 		if binPath, err := exec.LookPath(command[0]); err == nil {
-			absPath, _ := filepath.Abs(binPath)
-			// Allow the directory containing the symlink (e.g. ~/.local/bin)
-			if dir := filepath.Dir(absPath); strings.HasPrefix(dir, realHome) {
-				allowPaths = append(allowPaths, dir)
-			}
-			// Resolve symlinks and allow the target's parent tree
-			if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
-				// Allow the resolved binary's directory and one level up
-				// (e.g. ~/.local/share/claude/ for ~/.local/share/claude/versions/X)
-				resolvedDir := filepath.Dir(resolved)
-				if strings.HasPrefix(resolvedDir, realHome) {
-					allowPaths = append(allowPaths, resolvedDir)
-					parent := filepath.Dir(resolvedDir)
-					if parent != resolvedDir && strings.HasPrefix(parent, realHome) {
-						allowPaths = append(allowPaths, parent)
-					}
-				}
+			if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
 				command[0] = resolved
 			} else {
-				command[0] = absPath
+				command[0], _ = filepath.Abs(binPath)
 			}
 		}
 
