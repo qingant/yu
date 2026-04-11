@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/taoai/yu/internal/copilot"
 )
 
 // commandResult tells the main loop what to do after a command.
@@ -168,10 +167,10 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 		}
 
 	case "/copilot-login":
-		doCopilotLogin()
+		fmt.Println("Run outside the sandbox: yu github-copilot login")
 
 	case "/copilot-logout":
-		doCopilotLogout()
+		fmt.Println("Run outside the sandbox: yu github-copilot logout")
 
 	case "/rollback":
 		doRollback(projectDir)
@@ -518,38 +517,6 @@ type snapshotEntry struct {
 	Trigger string
 	Summary string
 	Age     string
-}
-
-func doCopilotLogin() {
-	if copilot.IsLoggedIn() {
-		user, err := copilot.ValidateToken()
-		if err == nil {
-			fmt.Printf("Already logged in as %s.\n", user)
-			return
-		}
-		// Token invalid, re-login
-		fmt.Printf("Token expired or invalid, re-authenticating...\n")
-	}
-
-	user, err := copilot.Login(func(s string) { fmt.Print(s) })
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Copilot login failed: %v\n", err)
-		return
-	}
-	fmt.Printf("\n  ✓ Logged in as %s\n", user)
-	fmt.Printf("  Select GitHub Copilot as provider with /model\n\n")
-}
-
-func doCopilotLogout() {
-	if !copilot.IsLoggedIn() {
-		fmt.Println("Not logged in to GitHub Copilot.")
-		return
-	}
-	if err := copilot.Logout(); err != nil {
-		fmt.Fprintf(os.Stderr, "Logout failed: %v\n", err)
-		return
-	}
-	fmt.Println("Logged out of GitHub Copilot.")
 }
 
 func doRollback(projectDir string) {

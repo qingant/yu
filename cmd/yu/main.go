@@ -11,6 +11,7 @@ import (
 	"github.com/taoai/yu/internal/cloud"
 	"github.com/taoai/yu/internal/cmdproxy"
 	"github.com/taoai/yu/internal/config"
+	"github.com/taoai/yu/internal/copilot"
 	"github.com/taoai/yu/internal/sandbox"
 	"github.com/taoai/yu/internal/snapshot"
 
@@ -51,6 +52,7 @@ func main() {
 	rootCmd.AddCommand(updateCmd())
 	rootCmd.AddCommand(pairCmd())
 	rootCmd.AddCommand(agentLoopCmd())
+	rootCmd.AddCommand(githubCopilotCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -403,4 +405,69 @@ func pairCmd() *cobra.Command {
 			return cloud.Pair()
 		},
 	}
+}
+
+func githubCopilotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "github-copilot",
+		Short: "Manage GitHub Copilot authentication",
+	}
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "login",
+		Short: "Log in to GitHub Copilot via OAuth device flow",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if copilot.IsLoggedIn() {
+				user, err := copilot.ValidateToken()
+				if err == nil {
+					fmt.Printf("Already logged in as %s.\n", user)
+					return nil
+				}
+				fmt.Println("Token expired, re-authenticating...")
+			}
+
+			user, err := copilot.Login(func(s string) { fmt.Print(s) })
+			if err != nil {
+				return fmt.Errorf("login failed: %w", err)
+			}
+			fmt.Printf("\n✓ Logged in as %s\n", user)
+			return nil
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "logout",
+		Short: "Log out of GitHub Copilot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !copilot.IsLoggedIn() {
+				fmt.Println("Not logged in.")
+				return nil
+			}
+			if err := copilot.Logout(); err != nil {
+				return err
+			}
+			fmt.Println("Logged out.")
+			return nil
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show GitHub Copilot authentication status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !copilot.IsLoggedIn() {
+				fmt.Println("Not logged in. Run: yu github-copilot login")
+				return nil
+			}
+			user, err := copilot.ValidateToken()
+			if err != nil {
+				fmt.Printf("Token invalid: %v\n", err)
+				return nil
+			}
+			fmt.Printf("Logged in as %s (Copilot active)\n", user)
+			return nil
+		},
+	})
+
+	return cmd
 }
