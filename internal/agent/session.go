@@ -11,15 +11,25 @@ import (
 	"time"
 )
 
+// TokenStats tracks token usage.
+type TokenStats struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	CacheRead    int64 `json:"cache_read,omitempty"`
+	CacheWrite   int64 `json:"cache_write,omitempty"`
+	Turns        int   `json:"turns"`
+}
+
 // Session holds a conversation that can be persisted to disk.
 type Session struct {
-	ID             string    `json:"id"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Model          string    `json:"model"`
-	Title          string    `json:"title"`
-	Messages       []Message `json:"messages"`
-	CompactSummary string    `json:"compact_summary,omitempty"`
+	ID             string     `json:"id"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	Model          string     `json:"model"`
+	Title          string     `json:"title"`
+	Messages       []Message  `json:"messages"`
+	CompactSummary string     `json:"compact_summary,omitempty"`
+	Stats          TokenStats `json:"stats"`
 }
 
 // SessionInfo is a lightweight summary for listing sessions.
@@ -175,4 +185,22 @@ func sessionID() string {
 	b := make([]byte, 6)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// GlobalStats sums stats across all saved sessions.
+func GlobalStats(wsDir string) TokenStats {
+	var total TokenStats
+	sessions := ListSessions(wsDir)
+	for _, info := range sessions {
+		s, err := LoadSession(wsDir, info.ID)
+		if err != nil {
+			continue
+		}
+		total.InputTokens += s.Stats.InputTokens
+		total.OutputTokens += s.Stats.OutputTokens
+		total.CacheRead += s.Stats.CacheRead
+		total.CacheWrite += s.Stats.CacheWrite
+		total.Turns += s.Stats.Turns
+	}
+	return total
 }

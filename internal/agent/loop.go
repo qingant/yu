@@ -25,16 +25,17 @@ var slashCommands = []string{
 	"/clear", "/compact", "/new",
 	"/sessions", "/resume",
 	"/model", "/init",
-	"/jobs", "/logs", "/kill", "/rollback",
+	"/jobs", "/logs", "/kill", "/rollback", "/stats",
 	"/remember", "/memory", "/forget",
 }
 
-// stats tracks token usage across turns.
+// stats tracks token usage for the current run.
 type stats struct {
 	totalInput      atomic.Int64
 	totalOutput     atomic.Int64
 	totalCacheRead  atomic.Int64
 	totalCacheWrite atomic.Int64
+	turns           atomic.Int64
 }
 
 // ANSI helpers
@@ -158,9 +159,8 @@ func Main() {
 			os.Exit(1)
 		}
 		fmt.Println()
-		if wsDir != "" {
-			session.Save(wsDir)
-		}
+		st.turns.Add(1)
+		syncStats(&st, session, wsDir)
 		bgManager.StopAll()
 		return
 	}
@@ -201,7 +201,7 @@ func Main() {
 
 		// Slash commands
 		if strings.HasPrefix(input, "/") {
-			result := handleSlashCommand(input, session, projectDir, wsDir, provider, bgManager)
+			result := handleSlashCommand(input, session, projectDir, wsDir, provider, bgManager, &st)
 			if result.newSession {
 				session = NewSession(model)
 				system = buildSystemPrompt(projectDir, findMemoryFile(wsDir))
@@ -287,15 +287,14 @@ func Main() {
 		}
 
 		elapsed := time.Since(turnStart)
+		st.turns.Add(1)
 		newTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnTokens := newTokens - prevTokens
 		cacheRead := st.totalCacheRead.Load()
 		printTurnStats(turnTokens, cacheRead, elapsed)
 
-		// Auto-save
-		if wsDir != "" {
-			session.Save(wsDir)
-		}
+		// Update session + global stats, auto-save
+		syncStats(&st, session, wsDir)
 	}
 }
 
@@ -890,6 +889,20 @@ func execDirectCommand(command, projectDir string) string {
 	}
 
 	return output.String()
+}
+
+// syncStats updates session stats from the run counters and saves.
+func syncStats(st *stats, session *Session, wsDir string) {
+	session.Stats = TokenStats{
+		InputTokens:  st.totalInput.Load(),
+		OutputTokens: st.totalOutput.Load(),
+		CacheRead:    st.totalCacheRead.Load(),
+		CacheWrite:   st.totalCacheWrite.Load(),
+		Turns:        int(st.turns.Load()),
+	}
+	if wsDir != "" {
+		session.Save(wsDir)
+	}
 }
 
 func loadActiveModel(wsDir string) string {

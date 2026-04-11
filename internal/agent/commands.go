@@ -23,7 +23,7 @@ type commandResult struct {
 
 // handleSlashCommand processes user input starting with "/".
 // Returns what action the loop should take.
-func handleSlashCommand(input string, session *Session, projectDir, wsDir string, provider Provider, bgm *BgManager) commandResult {
+func handleSlashCommand(input string, session *Session, projectDir, wsDir string, provider Provider, bgm *BgManager, st *stats) commandResult {
 	parts := strings.Fields(input)
 	cmd := parts[0]
 
@@ -171,6 +171,9 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 	case "/init":
 		initProjectContract(projectDir)
 
+	case "/stats":
+		printStats(st, session, wsDir)
+
 	case "/help":
 		printHelp()
 
@@ -195,6 +198,7 @@ Commands:
   /jobs              List background processes
   /logs <id> [n]     Show last n lines of process output
   /kill <id>         Stop a background process
+  /stats             Show token usage (run, session, global)
   /rollback          Roll back project to a previous snapshot
   /remember <text>   Save a note to memory
   /memory            Show saved memory
@@ -426,6 +430,51 @@ func fetchCustomModels(baseURL, apiKey string) []modelInfo {
 	}
 	customModelCache = models
 	return models
+}
+
+// --- Stats ---
+
+func printStats(st *stats, session *Session, wsDir string) {
+	// Current run
+	runIn := st.totalInput.Load()
+	runOut := st.totalOutput.Load()
+	runCache := st.totalCacheRead.Load()
+	runTurns := int(st.turns.Load())
+
+	fmt.Printf("\n  %sThis run:%s\n", bold, reset)
+	fmt.Printf("    Turns:    %d\n", runTurns)
+	fmt.Printf("    Input:    %s\n", formatTokens(runIn))
+	fmt.Printf("    Output:   %s\n", formatTokens(runOut))
+	fmt.Printf("    Total:    %s\n", formatTokens(runIn+runOut))
+	if runCache > 0 {
+		fmt.Printf("    Cached:   %s\n", formatTokens(runCache))
+	}
+
+	// Session (including previous runs in this session)
+	fmt.Printf("\n  %sSession:%s  %s\n", bold, reset, session.Title)
+	sesIn := session.Stats.InputTokens + runIn
+	sesOut := session.Stats.OutputTokens + runOut
+	sesTurns := session.Stats.Turns + runTurns
+	fmt.Printf("    Turns:    %d\n", sesTurns)
+	fmt.Printf("    Input:    %s\n", formatTokens(sesIn))
+	fmt.Printf("    Output:   %s\n", formatTokens(sesOut))
+	fmt.Printf("    Total:    %s\n", formatTokens(sesIn+sesOut))
+
+	// Global (all sessions)
+	if wsDir != "" {
+		global := GlobalStats(wsDir)
+		// Add current unsaved run
+		global.InputTokens += runIn
+		global.OutputTokens += runOut
+		global.Turns += runTurns
+		fmt.Printf("\n  %sAll sessions:%s\n", bold, reset)
+		fmt.Printf("    Sessions: %d\n", len(ListSessions(wsDir)))
+		fmt.Printf("    Turns:    %d\n", global.Turns)
+		fmt.Printf("    Input:    %s\n", formatTokens(global.InputTokens))
+		fmt.Printf("    Output:   %s\n", formatTokens(global.OutputTokens))
+		fmt.Printf("    Total:    %s\n", formatTokens(global.InputTokens+global.OutputTokens))
+	}
+	fmt.Println()
 }
 
 // --- Rollback ---
