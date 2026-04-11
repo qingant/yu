@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -67,6 +68,9 @@ func (p *AnthropicProvider) Stream(ctx context.Context, system []SystemBlock, me
 	httpReq.Header.Set("x-api-key", p.APIKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+	if secret := os.Getenv("YU_PROXY_SECRET"); secret != "" {
+		httpReq.Header.Set("X-Yu-Proxy-Secret", secret)
+	}
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

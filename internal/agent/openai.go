@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -47,6 +48,9 @@ func (p *OpenAIProvider) Stream(ctx context.Context, system []SystemBlock, messa
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	if secret := os.Getenv("YU_PROXY_SECRET"); secret != "" {
+		httpReq.Header.Set("X-Yu-Proxy-Secret", secret)
+	}
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

@@ -63,6 +63,9 @@ func (e *ToolExecutor) execGenerateImage(input json.RawMessage) (string, bool) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if secret := os.Getenv("YU_PROXY_SECRET"); secret != "" {
+		req.Header.Set("X-Yu-Proxy-Secret", secret)
+	}
 
 	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Do(req)

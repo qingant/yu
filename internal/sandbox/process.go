@@ -315,6 +315,9 @@ func (s *Sandbox) buildEnv() []string {
 	env = setEnv(env, "YU_SANDBOX_ID", s.ID)
 	env = setEnv(env, "YU_PROJECT_DIR", s.ProjectDir)
 	env = setEnv(env, "YU_WORKSPACE_DIR", config.WorkspaceDir(s.ProjectDir))
+	if s.apiProxy != nil {
+		env = setEnv(env, "YU_PROXY_SECRET", s.apiProxy.Secret)
+	}
 	env = setEnv(env, "YU_LOG_FILE", filepath.Join(s.TmpDir, "yu.log"))
 
 	return env

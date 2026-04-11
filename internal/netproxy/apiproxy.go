@@ -2,6 +2,7 @@ package netproxy
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -39,16 +40,20 @@ type APIRoute struct {
 // replacing dummy credentials with real ones. No MITM, no certs.
 type APIProxy struct {
 	Addr   string // listen address
+	Secret string // request must include X-Yu-Proxy-Secret header
 	Routes []APIRoute
 
 	listener net.Listener
 	auditFn  func(method, url string, status int, note string)
 }
 
-// NewAPIProxy creates a local API proxy.
+// NewAPIProxy creates a local API proxy with a random secret.
 func NewAPIProxy() *APIProxy {
+	b := make([]byte, 16)
+	rand.Read(b)
 	return &APIProxy{
-		Addr: "127.0.0.1:0",
+		Addr:   "127.0.0.1:0",
+		Secret: fmt.Sprintf("%x", b),
 	}
 }
 
@@ -77,6 +82,12 @@ func (ap *APIProxy) SetAuditFunc(fn func(method, url string, status int, note st
 }
 
 func (ap *APIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Validate proxy secret — only the sandboxed agent should know this
+	if r.Header.Get("X-Yu-Proxy-Secret") != ap.Secret {
+		http.Error(w, "invalid proxy secret", 403)
+		return
+	}
+
 	// Find matching route
 	var route *APIRoute
 	for i := range ap.Routes {
@@ -265,9 +276,10 @@ func (ap *APIProxy) handleWebSocket(w http.ResponseWriter, r *http.Request, rout
 // authHeaders are headers that carry credentials — never copy from agent to upstream.
 // Agent sends dummy keys; real auth comes exclusively from ForceHeaders.
 var authHeaders = map[string]bool{
-	"Authorization":   true,
-	"X-Api-Key":       true,
-	"X-Goog-Api-Key":  true,
+	"Authorization":     true,
+	"X-Api-Key":         true,
+	"X-Goog-Api-Key":    true,
+	"X-Yu-Proxy-Secret": true, // internal — never forward to upstream
 }
 
 func (ap *APIProxy) copyHeaders(src, dst http.Header, route *APIRoute) {
