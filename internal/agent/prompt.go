@@ -79,7 +79,8 @@ func basePrompt(projectDir string) string {
 - For non-trivial tasks, use the plan tool first to propose your approach.
 - Be concise in responses. Show what you did, not lengthy explanations.
 - When running bash commands, prefer specific commands over broad ones.
-- Multiple tool calls in one response will execute in parallel.`
+- Multiple tool calls in one response will execute in parallel.
+- The user can run shell commands directly with !command (e.g. !git status). The command and its output will appear in the conversation as "[User ran shell command: ...]". Use this context when the user refers to what they just ran.`
 
 	if gitBranch != "" {
 		prompt += "\n- Git branch: " + gitBranch

@@ -352,6 +352,14 @@ var agentAPIRoutes = []agentAPIRoute{
 		PathPrefix: "/gemini",
 		HeaderName: "x-goog-api-key",
 	},
+	{
+		KeyEnvs:      []string{"YU_API_KEY"},
+		BaseEnv:      "YU_BASE_URL",
+		PathPrefix:   "/yu-custom",
+		HeaderName:   "Authorization",
+		BearerPrefix: true,
+		// No DefaultURL — only active when user sets YU_BASE_URL
+	},
 }
 
 // configureKeyReplacements sets up local API proxy routes for agent API keys.

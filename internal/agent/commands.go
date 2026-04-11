@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -60,36 +59,31 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 			fmt.Println("No saved sessions.")
 			return commandResult{handled: true}
 		}
-		var idx int
 		if len(parts) > 1 {
 			n, err := strconv.Atoi(parts[1])
 			if err != nil || n < 1 || n > len(sessions) {
 				fmt.Printf("Invalid session number. Use 1-%d\n", len(sessions))
 				return commandResult{handled: true}
 			}
-			idx = n - 1
-		} else {
-			// Show list and prompt
-			for i, s := range sessions {
-				age := formatAge(s.UpdatedAt)
-				fmt.Printf("  %d) %s \033[2m(%s, %s)\033[0m\n", i+1, s.Title, s.Model, age)
-			}
-			fmt.Print("\nResume [1]: ")
-			reader := bufio.NewReader(os.Stdin)
-			answer, _ := reader.ReadString('\n')
-			answer = strings.TrimSpace(answer)
-			if answer == "" {
-				idx = 0
-			} else {
-				n, err := strconv.Atoi(answer)
-				if err != nil || n < 1 || n > len(sessions) {
-					fmt.Println("Cancelled.")
-					return commandResult{handled: true}
-				}
-				idx = n - 1
+			return commandResult{handled: true, resumeID: sessions[n-1].ID}
+		}
+		// Interactive selection
+		fmt.Println()
+		var labels []string
+		for _, s := range sessions {
+			age := formatAge(s.UpdatedAt)
+			labels = append(labels, fmt.Sprintf("%s %s(%s, %s)%s", s.Title, dim, s.Model, age, reset))
+		}
+		selected := arrowSelect(labels)
+		if selected == "" || selected == selectBack {
+			return commandResult{handled: true}
+		}
+		for i, l := range labels {
+			if l == selected {
+				return commandResult{handled: true, resumeID: sessions[i].ID}
 			}
 		}
-		return commandResult{handled: true, resumeID: sessions[idx].ID}
+		return commandResult{handled: true}
 
 	case "/model":
 		if len(parts) > 1 {
@@ -200,153 +194,198 @@ Commands:
   /remember <text>   Save a note to memory
   /memory            Show saved memory
   /forget            Clear all memory
-  /exit              Exit`)
+  /exit              Exit
+
+  !<command>         Run shell command directly (output visible to model)
+  @<file>            Attach file content to your message (tab to complete)
+  line ending \      Continue input on next line (multi-line)`)
 }
 
-// modelInfo represents a model from the API.
+// --- Provider & Model Selection ---
+
+type providerInfo struct {
+	Name     string
+	Key      string
+	APIKey   string
+	BaseURL  string
+	Protocol string // "anthropic" or "openai"
+}
+
 type modelInfo struct {
-	ID       string
-	Display  string
-	Provider string // "anthropic" or "openai"
+	ID      string
+	Display string
 }
 
-// cached model list
-var cachedModels []modelInfo
-
-func pickModel(current string) string {
-	fmt.Print("\033[2mFetching models...\033[0m")
-	models := fetchAvailableModels()
-	// Clear the "Fetching..." line
-	fmt.Print("\r\033[K")
-
-	if len(models) == 0 {
-		fmt.Println("No models found. Type model name directly: /model <name>")
-		return ""
-	}
-
-	fmt.Printf("\n  Current: \033[1m%s\033[0m\n\n", current)
-	for i, m := range models {
-		marker := "  "
-		if m.ID == current {
-			marker = "\033[1;32m>\033[0m "
-		}
-		label := m.Display
-		if label == "" {
-			label = m.ID
-		}
-		fmt.Printf("  %s%d) %-35s \033[2m%s\033[0m\n", marker, i+1, label, m.Provider)
-	}
-	fmt.Printf("\n  Pick [1-%d] or type model name: ", len(models))
-
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(answer)
-	if answer == "" {
-		return ""
-	}
-
-	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(models) {
-		chosen := models[n-1].ID
-		if chosen == current {
-			fmt.Println("  (already using this model)")
-			return ""
-		}
-		return chosen
-	}
-
-	if answer == current {
-		fmt.Println("  (already using this model)")
-		return ""
-	}
-	return answer
+// Fixed model lists for Anthropic and OpenAI — avoids litellm returning hundreds of unusable models.
+var anthropicModels = []modelInfo{
+	{ID: "claude-opus-4-6", Display: "Claude Opus 4.6"},
+	{ID: "claude-sonnet-4-6", Display: "Claude Sonnet 4.6"},
+	{ID: "claude-sonnet-4-5", Display: "Claude Sonnet 4.5"},
+	{ID: "claude-haiku-4-5", Display: "Claude Haiku 4.5"},
 }
 
-// fetchAvailableModels queries all configured API endpoints for model lists.
-func fetchAvailableModels() []modelInfo {
-	if cachedModels != nil {
-		return cachedModels
-	}
-
-	var models []modelInfo
-
-	// Anthropic
-	anthropicKey := os.Getenv("ANTHROPIC_AUTH_TOKEN")
-	if anthropicKey == "" {
-		anthropicKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	anthropicBase := os.Getenv("ANTHROPIC_BASE_URL")
-	if anthropicBase == "" {
-		anthropicBase = "https://api.anthropic.com"
-	}
-	if anthropicKey != "" {
-		if m := fetchAnthropicModels(anthropicBase, anthropicKey); len(m) > 0 {
-			models = append(models, m...)
-		}
-	}
-
-	// OpenAI
-	openaiKey := os.Getenv("OPENAI_API_KEY")
-	openaiBase := os.Getenv("OPENAI_BASE_URL")
-	if openaiBase == "" {
-		openaiBase = "https://api.openai.com"
-	}
-	if openaiKey != "" {
-		if m := fetchOpenAIModels(openaiBase, openaiKey); len(m) > 0 {
-			models = append(models, m...)
-		}
-	}
-
-	cachedModels = models
-	return models
+var openaiModels = []modelInfo{
+	{ID: "gpt-5.4", Display: "GPT-5.4"},
+	{ID: "o3-pro", Display: "o3-pro"},
+	{ID: "o3", Display: "o3"},
+	{ID: "o4-mini", Display: "o4-mini"},
+	{ID: "gpt-4.1", Display: "GPT-4.1"},
+	{ID: "gpt-4.1-mini", Display: "GPT-4.1 Mini"},
+	{ID: "gpt-4.1-nano", Display: "GPT-4.1 Nano"},
 }
 
-func fetchAnthropicModels(baseURL, apiKey string) []modelInfo {
-	url := strings.TrimSuffix(baseURL, "/") + "/v1/models"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+// cached model list for custom provider (fetched from API)
+var customModelCache []modelInfo
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
+// detectProviders returns available providers from environment.
+func detectProviders() []providerInfo {
+	var providers []providerInfo
 
-	if resp.StatusCode != 200 {
-		return nil
+	// 1. Anthropic
+	aKey := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	if aKey == "" {
+		aKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
-
-	var result struct {
-		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-
-	var models []modelInfo
-	for _, m := range result.Data {
-		id := m.ID
-		// API returns "anthropic/claude-xxx" — strip the org prefix
-		if idx := strings.LastIndex(id, "/"); idx >= 0 {
-			id = id[idx+1:]
+	if aKey != "" {
+		base := os.Getenv("ANTHROPIC_BASE_URL")
+		if base == "" {
+			base = "https://api.anthropic.com"
 		}
-		models = append(models, modelInfo{
-			ID:       id,
-			Display:  m.DisplayName,
-			Provider: "anthropic",
+		providers = append(providers, providerInfo{
+			Name: "Anthropic", Key: "anthropic",
+			APIKey: aKey, BaseURL: base, Protocol: "anthropic",
 		})
 	}
-	return models
+
+	// 2. OpenAI
+	oKey := os.Getenv("OPENAI_API_KEY")
+	if oKey != "" {
+		base := os.Getenv("OPENAI_BASE_URL")
+		if base == "" {
+			base = "https://api.openai.com"
+		}
+		providers = append(providers, providerInfo{
+			Name: "OpenAI", Key: "openai",
+			APIKey: oKey, BaseURL: base, Protocol: "openai",
+		})
+	}
+
+	// 3. Yu Custom (YU_BASE_URL + YU_API_KEY)
+	yuKey := os.Getenv("YU_API_KEY")
+	yuBase := os.Getenv("YU_BASE_URL")
+	if yuKey != "" && yuBase != "" {
+		providers = append(providers, providerInfo{
+			Name: "Yu Custom", Key: "yu-custom",
+			APIKey: yuKey, BaseURL: yuBase, Protocol: "openai",
+		})
+	}
+
+	return providers
 }
 
-func fetchOpenAIModels(baseURL, apiKey string) []modelInfo {
+// pickModel runs the two-level provider → model selection.
+// Esc/q in model list goes back to provider. Esc/q in provider list cancels.
+func pickModel(current string) string {
+	providers := detectProviders()
+	if len(providers) == 0 {
+		fmt.Println("  No providers detected. Set API keys in environment or .yu/env")
+		return ""
+	}
+
+	var providerLabels []string
+	for _, p := range providers {
+		providerLabels = append(providerLabels, p.Name)
+	}
+
+	fmt.Printf("\n  Current: %s%s%s\n", bold, current, reset)
+
+	for {
+		// Step 1: Pick provider
+		fmt.Printf("\n  %sProvider:%s\n", bold, reset)
+		selectedLabel := arrowSelect(providerLabels)
+		if selectedLabel == "" || selectedLabel == selectBack {
+			return "" // exit
+		}
+
+		var chosen *providerInfo
+		for i, l := range providerLabels {
+			if l == selectedLabel {
+				chosen = &providers[i]
+				break
+			}
+		}
+		if chosen == nil {
+			return ""
+		}
+
+		// Step 2: Get models
+		if chosen.Key == "yu-custom" {
+			fmt.Printf("  %sFetching models...%s", dim, reset)
+		}
+		models := modelsForProvider(*chosen)
+		if chosen.Key == "yu-custom" {
+			fmt.Print("\r\033[K")
+		}
+
+		if len(models) == 0 {
+			fmt.Printf("  No models available for %s\n", chosen.Name)
+			continue // back to provider
+		}
+
+		var labels []string
+		currentIdx := 0
+		for i, m := range models {
+			label := m.Display
+			if label == "" || label == m.ID {
+				label = m.ID
+			} else if label != m.ID {
+				label = fmt.Sprintf("%-22s %s%s%s", label, dim, m.ID, reset)
+			}
+			labels = append(labels, label)
+			if m.ID == current {
+				currentIdx = i
+			}
+		}
+
+		fmt.Printf("\n  %sModel:%s  %s(u: back, q: exit)%s\n", bold, reset, dim, reset)
+		selected := arrowSelectAt(labels, currentIdx)
+		if selected == selectBack {
+			continue // back to provider
+		}
+		if selected == "" {
+			return "" // exit
+		}
+
+		for i, l := range labels {
+			if l == selected {
+				activeProvider = chosen
+				if models[i].ID == current {
+					return ""
+				}
+				return models[i].ID
+			}
+		}
+	}
+}
+
+// modelsForProvider returns the model list — fixed for anthropic/openai, fetched for custom.
+func modelsForProvider(p providerInfo) []modelInfo {
+	switch p.Key {
+	case "anthropic":
+		return anthropicModels
+	case "openai":
+		return openaiModels
+	case "yu-custom":
+		return fetchCustomModels(p.BaseURL, p.APIKey)
+	}
+	return nil
+}
+
+func fetchCustomModels(baseURL, apiKey string) []modelInfo {
+	if customModelCache != nil {
+		return customModelCache
+	}
+
 	url := strings.TrimSuffix(baseURL, "/") + "/v1/models"
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -360,15 +399,13 @@ func fetchOpenAIModels(baseURL, apiKey string) []modelInfo {
 		return nil
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != 200 {
 		return nil
 	}
 
 	var result struct {
 		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
+			ID string `json:"id"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -377,12 +414,9 @@ func fetchOpenAIModels(baseURL, apiKey string) []modelInfo {
 
 	var models []modelInfo
 	for _, m := range result.Data {
-		models = append(models, modelInfo{
-			ID:       m.ID,
-			Display:  m.ID,
-			Provider: "openai",
-		})
+		models = append(models, modelInfo{ID: m.ID, Display: m.ID})
 	}
+	customModelCache = models
 	return models
 }
 

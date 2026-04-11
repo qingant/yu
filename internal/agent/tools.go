@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"golang.org/x/net/html"
+	"golang.org/x/term"
 )
 
 // ToolExecutor handles tool execution for the agent.
@@ -268,8 +269,8 @@ func (e *ToolExecutor) execBash(input json.RawMessage) (string, bool) {
 				output.WriteByte('\n')
 			}
 			mu.Unlock()
-			// Stream to terminal in real-time
-			fmt.Printf("\033[2m%s%s\033[0m\n", prefix, line)
+			// Stream to terminal in real-time, indented
+			fmt.Printf("    \033[2m%s%s\033[0m\n", prefix, line)
 		}
 	}
 
@@ -326,7 +327,7 @@ func (e *ToolExecutor) execPoll(input json.RawMessage) (string, bool) {
 
 	for {
 		attempt++
-		fmt.Printf("\033[2m[poll #%d] %s\033[0m\n", attempt, args.Command)
+		fmt.Printf("    \033[2m[poll #%d] %s\033[0m\n", attempt, args.Command)
 
 		cmd := exec.Command("bash", "-c", args.Command)
 		cmd.Dir = e.ProjectDir
@@ -336,11 +337,11 @@ func (e *ToolExecutor) execPoll(input json.RawMessage) (string, bool) {
 		// Check success
 		if args.SuccessPattern != "" {
 			if strings.Contains(result, args.SuccessPattern) {
-				fmt.Printf("\033[32m[poll] success on attempt #%d\033[0m\n", attempt)
+				fmt.Printf("    \033[32m[poll] success on attempt #%d\033[0m\n", attempt)
 				return fmt.Sprintf("Success on attempt #%d:\n%s", attempt, result), false
 			}
 		} else if err == nil {
-			fmt.Printf("\033[32m[poll] success on attempt #%d\033[0m\n", attempt)
+			fmt.Printf("    \033[32m[poll] success on attempt #%d\033[0m\n", attempt)
 			return fmt.Sprintf("Success on attempt #%d:\n%s", attempt, result), false
 		}
 
@@ -349,7 +350,7 @@ func (e *ToolExecutor) execPoll(input json.RawMessage) (string, bool) {
 		if len(preview) > 200 {
 			preview = preview[:200] + "..."
 		}
-		fmt.Printf("\033[2m[poll] not yet: %s\033[0m\n", strings.ReplaceAll(strings.TrimSpace(preview), "\n", " "))
+		fmt.Printf("    \033[2m[poll] not yet: %s\033[0m\n", strings.ReplaceAll(strings.TrimSpace(preview), "\n", " "))
 
 		// Check deadline
 		if time.Now().Add(time.Duration(interval) * time.Second).After(deadline) {
@@ -712,19 +713,21 @@ func (e *ToolExecutor) execAskUser(input json.RawMessage) (string, bool) {
 		return fmt.Sprintf("invalid input: %v", err), true
 	}
 
-	fmt.Printf("\n\033[1;33m%s\033[0m\n", args.Question)
-	if len(args.Options) > 0 {
-		for i, opt := range args.Options {
-			fmt.Printf("  %d) %s\n", i+1, opt)
-		}
-	}
-	fmt.Print("\n> ")
+	fmt.Printf("\n  \033[1;33m%s\033[0m\n", args.Question)
 
+	if len(args.Options) > 0 {
+		selected := arrowSelect(args.Options)
+		if selected == "" {
+			return "(cancelled)", false
+		}
+		return selected, false
+	}
+
+	// No options — free text input
+	fmt.Print("  > ")
 	reader := bufio.NewReader(os.Stdin)
 	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(answer)
-
-	return answer, false
+	return strings.TrimSpace(answer), false
 }
 
 func (e *ToolExecutor) execPlan(input json.RawMessage) (string, bool) {
@@ -736,20 +739,171 @@ func (e *ToolExecutor) execPlan(input json.RawMessage) (string, bool) {
 		return fmt.Sprintf("invalid input: %v", err), true
 	}
 
-	fmt.Printf("\n\033[1;36m=== Plan: %s ===\033[0m\n", args.Title)
+	fmt.Printf("\n  \033[1;36m%s\033[0m\n", args.Title)
 	for i, step := range args.Steps {
 		fmt.Printf("  %d. %s\n", i+1, step)
 	}
-	fmt.Print("\nApprove? [Y/n/edit]: ")
+	fmt.Println()
 
+	selected := arrowSelect([]string{"Approve", "Reject", "Edit"})
+	switch selected {
+	case "Approve":
+		return "Plan approved. Proceed with implementation.", false
+	case "", "Reject":
+		return "Plan rejected by user.", false
+	default:
+		return fmt.Sprintf("User response: %s", selected), false
+	}
+}
+
+// Selection return values
+const selectBack = "\x00back" // sentinel: user wants to go back (u key)
+
+// arrowSelect renders an interactive list. Arrow keys to move, Enter to select.
+// Returns "" on q/Esc (exit), selectBack on u (go back), or the selected option.
+func arrowSelect(options []string) string {
+	return arrowSelectAt(options, 0)
+}
+
+// arrowSelectAt renders an interactive list starting at the given index.
+func arrowSelectAt(options []string, startIdx int) string {
+	if len(options) == 0 {
+		return ""
+	}
+
+	oldState, err := rawModeOn()
+	if err != nil {
+		return fallbackSelect(options)
+	}
+	defer rawModeOff(oldState)
+
+	cursor := startIdx
+	if cursor < 0 || cursor >= len(options) {
+		cursor = 0
+	}
+	renderList(options, cursor)
+
+	buf := make([]byte, 3)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+
+		vl := visibleLines(len(options))
+		switch {
+		case n == 1 && buf[0] == 13: // Enter
+			clearLines(vl)
+			fmt.Printf("  \033[32m✓ %s\033[0m\n", options[cursor])
+			return options[cursor]
+
+		case n == 1 && (buf[0] == 3 || buf[0] == 'q'): // Ctrl+C or q → exit
+			clearLines(vl)
+			return ""
+
+		case n == 1 && buf[0] == 27: // Esc → exit
+			clearLines(vl)
+			return ""
+
+		case n == 1 && buf[0] == 'u': // u → go back
+			clearLines(vl)
+			return selectBack
+
+		case n == 3 && buf[0] == 27 && buf[1] == 91: // Arrow keys
+			switch buf[2] {
+			case 65: // Up
+				if cursor > 0 {
+					cursor--
+				}
+			case 66: // Down
+				if cursor < len(options)-1 {
+					cursor++
+				}
+			}
+			clearLines(vl)
+			renderList(options, cursor)
+		}
+	}
+
+	return options[cursor]
+}
+
+const maxVisible = 15 // max items visible at once
+
+func renderList(options []string, cursor int) {
+	total := len(options)
+	if total <= maxVisible {
+		// No scrolling needed
+		for i, opt := range options {
+			if i == cursor {
+				fmt.Printf("  \033[36m❯ %s\033[0m\r\n", opt)
+			} else {
+				fmt.Printf("    %s\r\n", opt)
+			}
+		}
+		return
+	}
+
+	// Scrolling: keep cursor centered in viewport
+	start := cursor - maxVisible/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxVisible
+	if end > total {
+		end = total
+		start = end - maxVisible
+	}
+
+	if start > 0 {
+		fmt.Printf("  \033[2m  ↑ %d more\033[0m\r\n", start)
+	}
+	for i := start; i < end; i++ {
+		if i == cursor {
+			fmt.Printf("  \033[36m❯ %s\033[0m\r\n", options[i])
+		} else {
+			fmt.Printf("    %s\r\n", options[i])
+		}
+	}
+	if end < total {
+		fmt.Printf("  \033[2m  ↓ %d more\033[0m\r\n", total-end)
+	}
+}
+
+func visibleLines(total int) int {
+	n := total
+	if n > maxVisible {
+		n = maxVisible
+		n++ // "↓ more" line
+	}
+	// Add "↑ more" line if we might scroll
+	if total > maxVisible {
+		n++
+	}
+	return n
+}
+
+func clearLines(n int) {
+	for i := 0; i < n; i++ {
+		fmt.Print("\033[A\033[K")
+	}
+}
+
+func fallbackSelect(options []string) string {
+	for i, opt := range options {
+		fmt.Printf("  %d) %s\n", i+1, opt)
+	}
+	fmt.Print("  > ")
 	reader := bufio.NewReader(os.Stdin)
 	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-
-	if answer == "" || answer == "y" || answer == "yes" {
-		return "Plan approved. Proceed with implementation.", false
+	answer = strings.TrimSpace(answer)
+	if n, err := fmt.Sscanf(answer, "%d"); err == nil && n >= 1 && n <= len(options) {
+		return options[n-1]
 	}
-	return fmt.Sprintf("User response: %s", answer), false
+	if answer != "" {
+		return answer
+	}
+	return options[0]
 }
 
 func (e *ToolExecutor) resolvePath(path string) string {
@@ -778,4 +932,12 @@ func detectMediaType(path string) string {
 
 func rawJSON(s string) json.RawMessage {
 	return json.RawMessage(s)
+}
+
+func rawModeOn() (*term.State, error) {
+	return term.MakeRaw(int(os.Stdin.Fd()))
+}
+
+func rawModeOff(state *term.State) {
+	term.Restore(int(os.Stdin.Fd()), state)
 }

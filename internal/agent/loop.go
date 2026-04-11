@@ -1,14 +1,17 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -31,6 +34,23 @@ type stats struct {
 	totalInput  atomic.Int64
 	totalOutput atomic.Int64
 }
+
+// ANSI helpers
+const (
+	dim       = "\033[2m"
+	bold      = "\033[1m"
+	red       = "\033[31m"
+	green     = "\033[32m"
+	yellow    = "\033[33m"
+	cyan      = "\033[36m"
+	boldGreen = "\033[1;32m"
+	boldCyan  = "\033[1;36m"
+	boldRed   = "\033[1;31m"
+	reset     = "\033[0m"
+)
+
+// spinner frames
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // Main is the entry point for `yu agent-loop`. Must be called inside a sandbox.
 func Main() {
@@ -63,14 +83,14 @@ func Main() {
 	maxTokens := 8192
 	provider := NewProvider(model, apiKey, baseURL, maxTokens)
 
-	// Background process manager with exit notifications
+	// Background process manager
 	tmpDir := os.TempDir()
 	bgManager := NewBgManager(projectDir, filepath.Join(tmpDir, "yu-bg"), func(p *BgProcess) {
 		status := "exited"
 		if p.ExitCode != 0 {
 			status = fmt.Sprintf("failed (exit %d)", p.ExitCode)
 		}
-		fmt.Printf("\n\033[2m[bg #%d %s] %s\033[0m\n", p.ID, status, truncCmd(p.Command, 40))
+		fmt.Printf("\n%s[bg #%d %s] %s%s\n", dim, p.ID, status, truncCmd(p.Command, 40), reset)
 	})
 
 	executor := &ToolExecutor{
@@ -81,7 +101,7 @@ func Main() {
 	tools := toolDefs()
 	var st stats
 
-	// Signal handling — also clean up background processes
+	// Signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -93,7 +113,7 @@ func Main() {
 		os.Exit(0)
 	}()
 
-	// Session — if resumed, sync model + provider to what the session had
+	// Session
 	session := resolveSession(wsDir, model)
 	if session.Model != "" && session.Model != model {
 		model = session.Model
@@ -107,11 +127,11 @@ func Main() {
 	memoryFile := findMemoryFile(wsDir)
 	system := buildSystemPrompt(projectDir, memoryFile)
 
-	// Readline with tab completion
+	// Readline
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:            promptString(model, bgManager.RunningCount()),
 		HistoryFile:       historyFile(wsDir),
-		AutoComplete:      newCompleter(),
+		AutoComplete:      newCompleter(projectDir),
 		InterruptPrompt:   "^C",
 		EOFPrompt:         "exit",
 		HistorySearchFold: true,
@@ -122,19 +142,12 @@ func Main() {
 	}
 	defer rl.Close()
 
-	// Welcome
-	fmt.Printf("\033[1;36myu\033[0m \033[2m%s\033[0m\n", shortModel(model))
-	fmt.Printf("\033[2m%s\033[0m\n", projectDir)
-	if len(session.Messages) > 0 {
-		turns := countUserTurns(session.Messages)
-		fmt.Printf("\033[2mResumed: %s (%d turns)\033[0m\n\n", session.Title, turns)
-		printSessionHistory(session.Messages)
-	}
-	fmt.Println()
+	// Welcome banner
+	printWelcome(model, projectDir, session)
 
 	for {
 		rl.SetPrompt(promptString(model, bgManager.RunningCount()))
-		input, err := rl.Readline()
+		input, err := readMultiLine(rl, model, bgManager)
 		if err != nil {
 			if err == readline.ErrInterrupt {
 				continue
@@ -144,7 +157,6 @@ func Main() {
 			}
 			break
 		}
-		input = strings.TrimSpace(input)
 		if input == "" {
 			continue
 		}
@@ -178,39 +190,67 @@ func Main() {
 			if result.switchModel != "" {
 				model = result.switchModel
 				session.Model = model
-				newKey, newBase := detectAPIConfig(model)
-				if newKey == "" {
-					fmt.Fprintf(os.Stderr, "No API key found for model %s\n", model)
+				// Try active provider first (from /model picker)
+				if p, ok := switchFromActiveProvider(model); ok {
+					provider = p
 				} else {
-					provider = NewProvider(model, newKey, newBase, maxTokens)
-					fmt.Printf("Switched to \033[1m%s\033[0m\n", model)
+					// Fallback to env detection
+					newKey, newBase := detectAPIConfig(model)
+					if newKey == "" {
+						fmt.Fprintf(os.Stderr, "No API key found for model %s\n", model)
+					} else {
+						provider = NewProvider(model, newKey, newBase, maxTokens)
+					}
 				}
+				fmt.Printf("\nSwitched to %s%s%s\n", bold, model, reset)
 			}
 			if result.handled {
 				continue
 			}
 		}
 
-		// User message
+		// !cmd — direct shell execution, output added to conversation for model context
+		if strings.HasPrefix(input, "!") {
+			shellCmd := strings.TrimPrefix(input, "!")
+			shellCmd = strings.TrimSpace(shellCmd)
+			if shellCmd != "" {
+				output := execDirectCommand(shellCmd, projectDir)
+				// Add to conversation so the model can see it
+				session.Messages = append(session.Messages, Message{
+					Role: "user",
+					Content: []ContentBlock{
+						{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, output)},
+					},
+				})
+				if wsDir != "" {
+					session.Save(wsDir)
+				}
+				continue
+			}
+		}
+
+		// User message — expand @file references
+		_, expanded := expandAtFiles(input, projectDir)
 		session.Messages = append(session.Messages, Message{
 			Role: "user",
 			Content: []ContentBlock{
-				{Type: "text", Text: input},
+				{Type: "text", Text: expanded},
 			},
 		})
 
-		// Agent turn
+		// Agent turn with spinner
 		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnStart := time.Now()
+
 		err = agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n\033[1;31mError: %v\033[0m\n", err)
+			fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, err, reset)
 		}
+
 		elapsed := time.Since(turnStart)
 		newTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnTokens := newTokens - prevTokens
-		now := time.Now().Format("15:04:05")
-		fmt.Printf("\n\n\033[2m%s  %s  %s  %s\033[0m\n\n", randomEmoji(), formatTokens(turnTokens), formatDuration(elapsed), now)
+		printTurnStats(turnTokens, elapsed)
 
 		// Auto-save
 		if wsDir != "" {
@@ -219,142 +259,158 @@ func Main() {
 	}
 }
 
-// promptString builds a single-line prompt with optional bg process indicator.
-func promptString(model string, bgCount int) string {
-	bg := ""
-	if bgCount > 0 {
-		bg = fmt.Sprintf(" \033[33m[%d bg]\033[0m", bgCount)
+// --- Input ---
+
+// readMultiLine reads input, supporting \ continuation for multi-line.
+func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string, error) {
+	line, err := rl.Readline()
+	if err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("\033[1;32myu\033[0m \033[2m%s\033[0m%s> ", shortModel(model), bg)
-}
+	line = strings.TrimRight(line, " \t")
 
-func shortModel(model string) string {
-	// claude-sonnet-4-6 → sonnet-4
-	// gpt-4o → gpt-4o
-	parts := strings.Split(model, "-")
-	if len(parts) >= 3 && parts[0] == "claude" {
-		// claude-{name}-{version}-{date} → {name}-{version}
-		return parts[1] + "-" + parts[2]
-	}
-	return model
-}
-
-func formatTokens(n int64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d tokens", n)
-	}
-	return fmt.Sprintf("%.1fk tokens", float64(n)/1000)
-}
-
-func newCompleter() *readline.PrefixCompleter {
-	items := make([]readline.PrefixCompleterInterface, len(slashCommands))
-	for i, cmd := range slashCommands {
-		items[i] = readline.PcItem(cmd)
-	}
-	return readline.NewPrefixCompleter(items...)
-}
-
-func historyFile(wsDir string) string {
-	if wsDir == "" {
-		return ""
-	}
-	os.MkdirAll(wsDir, 0700)
-	return filepath.Join(wsDir, "history")
-}
-
-// resolveSession decides whether to resume or create a new session.
-func resolveSession(wsDir, model string) *Session {
-	if wsDir == "" {
-		return NewSession(model)
-	}
-
-	latest := LoadLatestSession(wsDir)
-	if latest == nil || len(latest.Messages) == 0 {
-		return NewSession(model)
-	}
-
-	// If the latest session is recent (< 1 hour), offer to resume
-	if time.Since(latest.UpdatedAt) < time.Hour {
-		turns := countUserTurns(latest.Messages)
-		fmt.Printf("Recent session: \033[1m%s\033[0m (%d turns, %s)\n",
-			latest.Title, turns, formatAge(latest.UpdatedAt))
-		fmt.Print("Resume? [Y/n]: ")
-
-		// Use basic stdin for this one prompt (before readline init)
-		var answer string
-		fmt.Scanln(&answer)
-		answer = strings.TrimSpace(strings.ToLower(answer))
-
-		if answer == "" || answer == "y" || answer == "yes" {
-			return latest
+	// Multi-line: if line ends with \, continue reading
+	var lines []string
+	for strings.HasSuffix(line, "\\") {
+		lines = append(lines, strings.TrimSuffix(line, "\\"))
+		rl.SetPrompt(fmt.Sprintf("%s...%s ", dim, reset))
+		next, err := rl.Readline()
+		if err != nil {
+			break
 		}
+		line = strings.TrimRight(next, " \t")
 	}
+	lines = append(lines, line)
 
-	return NewSession(model)
+	input := strings.TrimSpace(strings.Join(lines, "\n"))
+	return input, nil
 }
 
-// printSessionHistory replays past messages so the user sees the conversation context.
+// expandAtFiles finds @path references in input and expands them to file content.
+// Returns the original text with @path replaced by inline file content for the model.
+func expandAtFiles(input, projectDir string) (display string, expanded string) {
+	// Match @path tokens (not preceded by another @, not inside backticks)
+	words := strings.Fields(input)
+	var hasFiles bool
+	var fileBlocks []string
+
+	for _, w := range words {
+		if !strings.HasPrefix(w, "@") || len(w) < 2 {
+			continue
+		}
+		path := w[1:]
+		absPath := path
+		if !filepath.IsAbs(path) {
+			absPath = filepath.Join(projectDir, path)
+		}
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			continue
+		}
+		hasFiles = true
+		fileBlocks = append(fileBlocks, fmt.Sprintf("[File: %s]\n```\n%s\n```", path, string(data)))
+	}
+
+	if !hasFiles {
+		return input, input
+	}
+
+	expanded = input + "\n\n" + strings.Join(fileBlocks, "\n\n")
+	return input, expanded
+}
+
+// --- Welcome & History ---
+
+func printWelcome(model, projectDir string, session *Session) {
+	fmt.Println()
+	fmt.Printf("  %syu%s %s%s%s\n", boldCyan, reset, dim, shortModel(model), reset)
+	fmt.Printf("  %s%s%s\n", dim, projectDir, reset)
+
+	if len(session.Messages) > 0 {
+		turns := countUserTurns(session.Messages)
+		fmt.Printf("  %sResumed: %s (%d turns)%s\n", dim, session.Title, turns, reset)
+		fmt.Println()
+		printSessionHistory(session.Messages)
+	} else {
+		fmt.Printf("  %sType /help for commands%s\n", dim, reset)
+	}
+	fmt.Println()
+}
+
 func printSessionHistory(messages []Message) {
 	for _, m := range messages {
 		switch m.Role {
 		case "user":
-			// Only print text messages, skip tool_result
 			for _, b := range m.Content {
 				if b.Type == "text" {
-					fmt.Printf("\033[1;32myu>\033[0m %s\n\n", truncateHistory(b.Text, 200))
+					fmt.Printf("%syu>%s %s\n\n", boldGreen, reset, truncateHistory(b.Text, 200))
 				}
 			}
 		case "assistant":
 			for _, b := range m.Content {
 				switch b.Type {
 				case "text":
-					fmt.Printf("%s\n\n", truncateHistory(b.Text, 500))
+					fmt.Printf("%s%s%s\n\n", dim, truncateHistory(b.Text, 500), reset)
 				case "tool_use":
-					fmt.Printf("\033[2m[%s]\033[0m\n", b.Name)
+					fmt.Printf("%s  ↳ %s%s\n", dim, b.Name, reset)
 				}
 			}
 		}
 	}
-	fmt.Println("\033[2m--- end of history ---\033[0m")
-	fmt.Println()
+	fmt.Printf("%s─── end of history ───%s\n\n", dim, reset)
 }
 
 func truncateHistory(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return s[:maxLen] + "…"
 }
 
-func countUserTurns(messages []Message) int {
-	count := 0
-	for _, m := range messages {
-		if m.Role == "user" {
-			for _, b := range m.Content {
-				if b.Type == "text" {
-					count++
-					break
-				}
-			}
-		}
+// --- Turn Stats ---
+
+func printTurnStats(tokens int64, elapsed time.Duration) {
+	now := time.Now().Format("15:04:05")
+	emoji := randomEmoji()
+	fmt.Printf("\n\n  %s%s  %s  %s  %s%s\n\n",
+		dim, emoji, formatTokens(tokens), formatDuration(elapsed), now, reset)
+}
+
+// --- Prompt ---
+
+func promptString(model string, bgCount int) string {
+	bg := ""
+	if bgCount > 0 {
+		bg = fmt.Sprintf(" %s[%d bg]%s", yellow, bgCount, reset)
 	}
-	return count
+	return fmt.Sprintf("%syu%s %s%s%s%s❯ ", boldGreen, reset, dim, shortModel(model), reset, bg)
 }
 
-// agentTurn runs one complete agent turn: API call → tool execution → repeat.
+func shortModel(model string) string {
+	parts := strings.Split(model, "-")
+	if len(parts) >= 3 && parts[0] == "claude" {
+		return parts[1] + "-" + parts[2]
+	}
+	return model
+}
+
+// --- Agent Turn ---
+
 func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, messages *[]Message, tools []ToolDef, executor *ToolExecutor, st *stats) error {
 	for {
+		// Start spinner while waiting for first token
+		spinner := startSpinner("thinking")
 		ch, err := provider.Stream(ctx, system, *messages, tools)
 		if err != nil {
+			spinner.Stop()
 			return err
 		}
 
-		response, err := processStream(ch)
+		response, err := processStream(ch, spinner)
 		if err != nil {
 			return err
 		}
 
-		// Track tokens
 		st.totalInput.Add(int64(response.InputTokens))
 		st.totalOutput.Add(int64(response.OutputTokens))
 
@@ -375,28 +431,21 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 			return nil
 		}
 
-		// Show tool calls
+		// Display tool calls with visual separation
 		fmt.Println()
 		for _, tc := range toolCalls {
-			fmt.Printf("\033[2m[%s] %s\033[0m\n", tc.Name, toolInputPreview(tc))
+			printToolCall(tc)
 		}
 
+		// Execute tools in parallel
 		results := executor.ExecuteTools(toolCalls)
 
+		// Display results
 		for i, result := range results {
-			content, _ := result.Content.(string)
-			preview := content
-			if len(preview) > 500 {
-				preview = preview[:500] + "..."
-			}
-			if result.IsError {
-				fmt.Printf("\033[31m[%s error] %s\033[0m\n", toolCalls[i].Name, preview)
-			} else if len(content) > 0 {
-				fmt.Printf("\033[2m[%s] %s\033[0m\n", toolCalls[i].Name, preview)
-			}
+			printToolResult(toolCalls[i].Name, result)
 		}
-		fmt.Println()
 
+		// Send tool results back
 		var resultBlocks []ContentBlock
 		for _, r := range results {
 			resultBlocks = append(resultBlocks, r)
@@ -408,22 +457,159 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 	}
 }
 
+// --- Tool Display ---
+
+func printToolCall(tc ContentBlock) {
+	name := tc.Name
+	preview := toolInputPreview(tc)
+
+	// Different icons for different tool types
+	icon := "●"
+	switch name {
+	case "bash":
+		icon = "$"
+	case "read_file":
+		icon = "◇"
+	case "write_file", "edit_file":
+		icon = "✎"
+	case "list_files", "search_files":
+		icon = "⌕"
+	case "web_fetch":
+		icon = "⊕"
+	case "background":
+		icon = "◐"
+	case "poll":
+		icon = "↻"
+	case "ask_user", "plan":
+		icon = "?"
+	}
+
+	fmt.Printf("  %s%s %s%s %s%s%s\n", cyan, icon, name, reset, dim, preview, reset)
+}
+
+func printToolResult(name string, result ContentBlock) {
+	content, _ := result.Content.(string)
+	if content == "" {
+		return
+	}
+
+	// Limit preview
+	preview := content
+	lines := strings.Split(preview, "\n")
+	if len(lines) > 15 {
+		preview = strings.Join(lines[:15], "\n") + fmt.Sprintf("\n    %s… (%d more lines)%s", dim, len(lines)-15, reset)
+	}
+
+	if result.IsError {
+		fmt.Printf("  %s✗ %s%s\n", red, preview, reset)
+	} else {
+		// Indent tool output
+		indented := "    " + strings.ReplaceAll(preview, "\n", "\n    ")
+		fmt.Printf("%s%s%s\n", dim, indented, reset)
+	}
+}
+
 func toolInputPreview(tc ContentBlock) string {
-	if tc.Name == "bash" {
+	switch tc.Name {
+	case "bash":
 		var args struct {
 			Command string `json:"command"`
 		}
 		json.Unmarshal(tc.Input, &args)
 		return args.Command
+	case "read_file", "write_file", "edit_file":
+		var args struct {
+			Path string `json:"path"`
+		}
+		json.Unmarshal(tc.Input, &args)
+		return args.Path
+	case "search_files":
+		var args struct {
+			Pattern string `json:"pattern"`
+		}
+		json.Unmarshal(tc.Input, &args)
+		return args.Pattern
+	case "list_files":
+		var args struct {
+			Pattern string `json:"pattern"`
+		}
+		json.Unmarshal(tc.Input, &args)
+		return args.Pattern
+	case "web_fetch":
+		var args struct {
+			URL string `json:"url"`
+		}
+		json.Unmarshal(tc.Input, &args)
+		return args.URL
+	case "background":
+		var args struct {
+			Action  string `json:"action"`
+			Command string `json:"command"`
+			ID      int    `json:"id"`
+		}
+		json.Unmarshal(tc.Input, &args)
+		if args.Command != "" {
+			return args.Action + " " + args.Command
+		}
+		if args.ID > 0 {
+			return fmt.Sprintf("%s #%d", args.Action, args.ID)
+		}
+		return args.Action
 	}
 	s := string(tc.Input)
-	if len(s) > 200 {
-		s = s[:200] + "..."
+	if len(s) > 120 {
+		s = s[:120] + "…"
 	}
 	return s
 }
 
-// streamResponse collects the full response from streaming events.
+// --- Spinner ---
+
+type spinnerState struct {
+	label   string
+	stop    chan struct{}
+	stopped chan struct{}
+}
+
+func startSpinner(label string) *spinnerState {
+	s := &spinnerState{
+		label:   label,
+		stop:    make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+	go func() {
+		defer close(s.stopped)
+		i := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stop:
+				// Clear spinner line
+				fmt.Printf("\r\033[K")
+				return
+			case <-ticker.C:
+				frame := spinnerFrames[i%len(spinnerFrames)]
+				fmt.Printf("\r  %s%s %s%s", cyan, frame, s.label, reset)
+				i++
+			}
+		}
+	}()
+	return s
+}
+
+func (s *spinnerState) Stop() {
+	select {
+	case <-s.stop:
+		// already stopped
+	default:
+		close(s.stop)
+	}
+	<-s.stopped
+}
+
+// --- Stream Processing ---
+
 type streamResponse struct {
 	Blocks       []ContentBlock
 	StopReason   string
@@ -432,8 +618,11 @@ type streamResponse struct {
 }
 
 // processStream reads streaming events, prints text in real-time, and returns the full response.
-func processStream(ch <-chan StreamEvent) (*streamResponse, error) {
+// Stops the spinner on first text output.
+func processStream(ch <-chan StreamEvent, spinner *spinnerState) (*streamResponse, error) {
 	resp := &streamResponse{}
+	spinnerActive := true
+	renderer := NewTermRenderer()
 
 	type blockBuilder struct {
 		block   ContentBlock
@@ -453,6 +642,10 @@ func processStream(ch <-chan StreamEvent) (*streamResponse, error) {
 				blocks[evt.Index] = &blockBuilder{
 					block: *evt.ContentBlock,
 				}
+				if spinnerActive {
+					spinner.Stop()
+					spinnerActive = false
+				}
 			}
 
 		case "content_block_delta":
@@ -461,7 +654,12 @@ func processStream(ch <-chan StreamEvent) (*streamResponse, error) {
 			}
 			switch evt.Delta.Type {
 			case "text_delta":
-				fmt.Print(evt.Delta.Text)
+				if spinnerActive {
+					spinner.Stop()
+					spinnerActive = false
+				}
+				// Feed through markdown renderer (handles tables, code, etc.)
+				renderer.Feed(evt.Delta.Text)
 				if b, ok := blocks[evt.Index]; ok {
 					b.block.Text += evt.Delta.Text
 				}
@@ -473,6 +671,9 @@ func processStream(ch <-chan StreamEvent) (*streamResponse, error) {
 
 		case "content_block_stop":
 			if b, ok := blocks[evt.Index]; ok {
+				if b.block.Type == "text" {
+					renderer.Flush()
+				}
 				if b.block.Type == "tool_use" && b.jsonBuf.Len() > 0 {
 					b.block.Input = json.RawMessage(b.jsonBuf.String())
 				}
@@ -491,16 +692,68 @@ func processStream(ch <-chan StreamEvent) (*streamResponse, error) {
 			// done
 
 		case "error":
+			if spinnerActive {
+				spinner.Stop()
+				spinnerActive = false
+			}
 			if evt.Delta != nil && evt.Delta.Text != "" {
 				return nil, fmt.Errorf("%s", evt.Delta.Text)
 			}
 		}
 	}
 
+	renderer.Flush()
+	if spinnerActive {
+		spinner.Stop()
+	}
+
 	return resp, nil
 }
 
-// detectAPIConfig finds API key and base URL from environment.
+// --- Utilities ---
+
+func promptForResume(latest *Session) bool {
+	turns := countUserTurns(latest.Messages)
+	fmt.Printf("  Recent session: %s%s%s (%d turns, %s)\n",
+		bold, latest.Title, reset, turns, formatAge(latest.UpdatedAt))
+	fmt.Printf("  Resume? [Y/n]: ")
+	var answer string
+	fmt.Scanln(&answer)
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+func resolveSession(wsDir, model string) *Session {
+	if wsDir == "" {
+		return NewSession(model)
+	}
+	latest := LoadLatestSession(wsDir)
+	if latest == nil || len(latest.Messages) == 0 {
+		return NewSession(model)
+	}
+	if time.Since(latest.UpdatedAt) < time.Hour {
+		if promptForResume(latest) {
+			return latest
+		}
+	}
+	return NewSession(model)
+}
+
+func countUserTurns(messages []Message) int {
+	count := 0
+	for _, m := range messages {
+		if m.Role == "user" {
+			for _, b := range m.Content {
+				if b.Type == "text" {
+					count++
+					break
+				}
+			}
+		}
+	}
+	return count
+}
+
 func detectAPIConfig(model string) (apiKey, baseURL string) {
 	if isAnthropicModel(model) {
 		apiKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
@@ -513,6 +766,7 @@ func detectAPIConfig(model string) (apiKey, baseURL string) {
 		}
 		return
 	}
+	// OpenAI / GitHub Copilot / other OpenAI-compatible
 	apiKey = os.Getenv("OPENAI_API_KEY")
 	baseURL = os.Getenv("OPENAI_BASE_URL")
 	if baseURL == "" {
@@ -521,15 +775,191 @@ func detectAPIConfig(model string) (apiKey, baseURL string) {
 	return
 }
 
-var prettyEmojis = []string{
-	"✨", "🌟", "💫", "⚡", "🔮", "🎯", "🚀", "💡",
-	"🌸", "🍀", "🌊", "🔥", "❄️", "🌙", "☀️", "🌈",
-	"🦋", "🐬", "🦊", "🐙", "🎪", "🎨", "🎵", "💎",
-	"🧊", "🫧", "🪐", "⭐", "🌀", "🎲", "🧩", "🪄",
+// activeProvider is set by /model picker — determines API key/base for subsequent calls.
+var activeProvider *providerInfo
+
+// switchFromActiveProvider creates a Provider using the globally selected provider context.
+func switchFromActiveProvider(model string) (Provider, bool) {
+	if activeProvider == nil {
+		return nil, false
+	}
+	return NewProvider(model, activeProvider.APIKey, activeProvider.BaseURL, 8192), true
 }
 
-func randomEmoji() string {
-	return prettyEmojis[time.Now().UnixNano()%int64(len(prettyEmojis))]
+// execDirectCommand runs a shell command directly (for !cmd), streaming output to terminal.
+func execDirectCommand(command, projectDir string) string {
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Dir = projectDir
+	cmd.Stdin = os.Stdin
+
+	// Stream output live and capture it
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		msg := fmt.Sprintf("error: %v", err)
+		fmt.Println(msg)
+		return msg
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		msg := fmt.Sprintf("error: %v", err)
+		fmt.Println(msg)
+		return msg
+	}
+
+	if err := cmd.Start(); err != nil {
+		msg := fmt.Sprintf("error: %v", err)
+		fmt.Println(msg)
+		return msg
+	}
+
+	var output strings.Builder
+	var wg sync.WaitGroup
+
+	pipe := func(r io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+			output.WriteString(line)
+			output.WriteByte('\n')
+		}
+	}
+
+	wg.Add(2)
+	go pipe(stdoutPipe)
+	go pipe(stderrPipe)
+	wg.Wait()
+
+	cmdErr := cmd.Wait()
+	if cmdErr != nil {
+		if exitErr, ok := cmdErr.(*exec.ExitError); ok {
+			fmt.Printf("%sExit code: %d%s\n", dim, exitErr.ExitCode(), reset)
+		}
+	}
+
+	return output.String()
+}
+
+func findMemoryFile(wsDir string) string {
+	if wsDir == "" {
+		return ""
+	}
+	path := wsDir + "/memory.md"
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+// yuCompleter handles both /commands and @file completion.
+type yuCompleter struct {
+	projectDir string
+	prefix     *readline.PrefixCompleter
+}
+
+func newCompleter(projectDir string) *yuCompleter {
+	items := make([]readline.PrefixCompleterInterface, len(slashCommands))
+	for i, cmd := range slashCommands {
+		items[i] = readline.PcItem(cmd)
+	}
+	return &yuCompleter{
+		projectDir: projectDir,
+		prefix:     readline.NewPrefixCompleter(items...),
+	}
+}
+
+func (c *yuCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	lineStr := string(line[:pos])
+
+	// Slash command completion at start of line
+	if strings.HasPrefix(lineStr, "/") {
+		return c.prefix.Do(line, pos)
+	}
+
+	// @file completion — find the @token being typed
+	atIdx := -1
+	for i := pos - 1; i >= 0; i-- {
+		ch := line[i]
+		if ch == '@' {
+			atIdx = i
+			break
+		}
+		if ch == ' ' || ch == '\t' {
+			break
+		}
+	}
+	if atIdx < 0 {
+		return nil, 0
+	}
+
+	partial := string(line[atIdx+1 : pos])
+	matches := completeFilePath(c.projectDir, partial)
+	if len(matches) == 0 {
+		return nil, 0
+	}
+
+	// Return completions relative to what's already typed
+	var candidates [][]rune
+	for _, m := range matches {
+		suffix := m[len(partial):]
+		candidates = append(candidates, []rune(suffix))
+	}
+	return candidates, len(partial)
+}
+
+func completeFilePath(projectDir, partial string) []string {
+	// Resolve the partial path
+	dir := projectDir
+	base := partial
+	if idx := strings.LastIndex(partial, "/"); idx >= 0 {
+		dir = filepath.Join(projectDir, partial[:idx])
+		base = partial[idx+1:]
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !strings.HasPrefix(name, base) {
+			continue
+		}
+		rel := name
+		if idx := strings.LastIndex(partial, "/"); idx >= 0 {
+			rel = partial[:idx+1] + name
+		}
+		if e.IsDir() {
+			rel += "/"
+		}
+		matches = append(matches, rel)
+	}
+	return matches
+}
+
+func historyFile(wsDir string) string {
+	if wsDir == "" {
+		return ""
+	}
+	os.MkdirAll(wsDir, 0700)
+	return filepath.Join(wsDir, "history")
+}
+
+func formatTokens(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d tok", n)
+	}
+	if n < 10000 {
+		return fmt.Sprintf("%.1fk tok", float64(n)/1000)
+	}
+	return fmt.Sprintf("%.0fk tok", float64(n)/1000)
 }
 
 func formatDuration(d time.Duration) string {
@@ -542,13 +972,21 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
-func findMemoryFile(wsDir string) string {
-	if wsDir == "" {
-		return ""
-	}
-	path := wsDir + "/memory.md"
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	return ""
+var prettyEmojis = []string{
+	"✨", "🌟", "💫", "⚡", "🔮", "🎯", "🚀", "💡",
+	"🌸", "🍀", "🌊", "🔥", "❄️", "🌙", "☀️", "🌈",
+	"🦋", "🐬", "🦊", "🐙", "🎪", "🎨", "🎵", "💎",
+	"🧊", "🫧", "🪐", "⭐", "🌀", "🎲", "🧩", "🪄",
+}
+
+// Use a mutex so concurrent goroutines don't both read the same nanosecond
+var emojiMu sync.Mutex
+var emojiIdx int
+
+func randomEmoji() string {
+	emojiMu.Lock()
+	defer emojiMu.Unlock()
+	e := prettyEmojis[emojiIdx%len(prettyEmojis)]
+	emojiIdx++
+	return e
 }
