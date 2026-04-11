@@ -58,10 +58,12 @@ func (d *DarwinGenerator) Generate(p Profile) (string, error) {
 		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n\n", p.WorkspaceDir))
 	}
 
-	// Re-allow agent config directories that were symlinked into sandbox HOME
-	// (e.g. ~/.claude, ~/.codex) — these are needed by external agents
+	// Re-allow agent-specific paths (config dirs, binary dirs).
+	// Config dirs (e.g. ~/.claude, ~/.codex) need read+write for session
+	// history, settings, etc. Binary dirs need read for execution.
 	for _, allowPath := range p.AllowPaths {
 		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", allowPath))
+		sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", allowPath))
 	}
 
 	// Still explicitly deny credential paths (belt + suspenders)
