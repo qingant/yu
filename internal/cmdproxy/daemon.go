@@ -92,6 +92,15 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Block gh subcommands that leak credentials
+	if req.Command == "gh" && len(req.Args) >= 2 && req.Args[0] == "auth" {
+		sub := req.Args[1]
+		if sub == "token" || sub == "status" || sub == "login" || sub == "logout" || sub == "setup-git" {
+			d.sendError(conn, fmt.Sprintf("blocked: gh auth %s exposes credentials", sub), 126)
+			return
+		}
+	}
+
 	// Validate CWD is within the project directory
 	cleanCwd, _ := filepath.EvalSymlinks(req.Cwd)
 	cleanProject, _ := filepath.EvalSymlinks(d.ProjectDir)
