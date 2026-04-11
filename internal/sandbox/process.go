@@ -124,6 +124,9 @@ func (s *Sandbox) launch() (int, error) {
 			for _, dir := range info.ConfigDirs {
 				allowPaths = append(allowPaths, filepath.Join(realHome, dir))
 			}
+			for _, file := range info.ConfigFiles {
+				allowPaths = append(allowPaths, filepath.Join(realHome, file))
+			}
 		}
 
 		// Allow ~/.local (user-installed binaries, libraries, support files)

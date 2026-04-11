@@ -36,10 +36,13 @@ func (d *DarwinGenerator) Generate(p Profile) (string, error) {
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n\n")
 
-	// Deny the entire home directory — agent shouldn't read user files
-	sb.WriteString("; Deny home directory\n")
+	// Deny the entire home directory — agent shouldn't read user files.
+	// But allow reading the home dir entry itself (literal, not subpath)
+	// because some binaries (e.g. Claude Code) need to stat/readdir HOME.
+	sb.WriteString("; Deny home directory (but allow the entry itself)\n")
 	sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", home))
-	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n\n", home))
+	sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", home))
+	sb.WriteString(fmt.Sprintf("(allow file-read* (literal %q))\n\n", home))
 
 	// Re-allow project directory (read-write)
 	sb.WriteString("; Allow project directory\n")
