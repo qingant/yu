@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,92 +17,32 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is set at build time via -ldflags.
 var version = "dev"
 
-// Known AI coding agent CLIs.
-var knownAgentCLIs = []struct {
-	Name    string
-	Binary  string
-	Display string
-}{
-	{"claude", "claude", "Claude Code"},
-	{"codex", "codex", "Codex"},
-	{"gemini", "gemini", "Gemini CLI"},
-}
+// Global project directory flag — resolved before any subcommand runs.
+var projectDir string
 
 func main() {
-	var (
-		configFile string
-		servePort  int
-		allowNet   []string
-		modelFlag  string
-	)
-
 	rootCmd := &cobra.Command{
-		Use:   "yu <dir> [-- <command...>]",
-		Short: "Secure sandbox for AI agents",
-		Long:  "Yu runs AI agents in a sandbox with credential isolation, auto-bypass permissions, and auto-snapshot.",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dir := args[0]
-			dashIdx := cmd.ArgsLenAtDash()
-
-			var command []string
-			if dashIdx >= 0 {
-				command = args[dashIdx:]
-				if len(command) == 0 {
-					return fmt.Errorf("no command specified after --")
-				}
-			} else {
-				var err error
-				command, err = detectAndPrompt()
-				if err != nil {
-					return err
-				}
+		Use:   "yu",
+		Short: "Fast AI coding agent with built-in sandbox",
+		Long:  "Yu is a fast AI coding agent. Use 'yu agent' for the built-in agent, 'yu wrap' to sandbox external agents.",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Skip path resolution for hidden/internal commands
+			if cmd.Name() == "shim" || cmd.Name() == "agent-loop" {
+				return nil
 			}
-
-			absDir, err := filepath.Abs(dir)
-			if err != nil {
-				return fmt.Errorf("resolving directory: %w", err)
-			}
-			if info, err := os.Stat(absDir); err != nil || !info.IsDir() {
-				return fmt.Errorf("not a directory: %s", absDir)
-			}
-
-			cfg, err := config.Load(absDir, configFile)
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			if len(allowNet) > 0 {
-				cfg.Network.AllowExtra = append(cfg.Network.AllowExtra, allowNet...)
-			}
-			if servePort > 0 {
-				cfg.Server.Port = servePort
-			}
-			if modelFlag != "" {
-				cfg.Agent.Model = modelFlag
-			}
-
-			// Pass model to built-in agent via environment
-			if cfg.Agent.Model != "" && len(command) >= 2 && command[0] == "yu" && command[1] == "agent-loop" {
-				os.Setenv("YU_MODEL", cfg.Agent.Model)
-			}
-
-			sb, err := sandbox.New(absDir, command, cfg)
-			if err != nil {
-				return fmt.Errorf("creating sandbox: %w", err)
-			}
-			return sb.Run()
+			return resolveProjectDir()
 		},
 	}
 
-	rootCmd.Flags().StringVarP(&configFile, "config", "c", "", "config file (default: .yu/config.yaml)")
-	rootCmd.Flags().IntVar(&servePort, "serve", 0, "enable server mode on this port")
-	rootCmd.Flags().StringSliceVar(&allowNet, "allow-net", nil, "additional allowed network domains")
-	rootCmd.Flags().StringVar(&modelFlag, "model", "", "model to use for built-in agent (e.g. claude-sonnet-4-20250514, gpt-4o)")
+	// Global flags available to ALL subcommands
+	rootCmd.PersistentFlags().StringVarP(&projectDir, "path", "C", "", "project directory (default: current directory)")
+	// -c as alias for -C
+	rootCmd.PersistentFlags().StringVarP(&projectDir, "directory", "c", "", "project directory (alias for -C)")
 
+	rootCmd.AddCommand(agentCmd())
+	rootCmd.AddCommand(wrapCmd())
 	rootCmd.AddCommand(configCmd())
 	rootCmd.AddCommand(snapshotsCmd())
 	rootCmd.AddCommand(rollbackCmd())
@@ -119,65 +57,161 @@ func main() {
 	}
 }
 
-// detectAndPrompt scans for installed agent CLIs and asks the user which to run.
-// The built-in Yu Agent is always available as the first option.
-func detectAndPrompt() ([]string, error) {
-	type found struct {
-		binary  string
-		display string
-		path    string
-		builtin bool
-	}
-
-	// Built-in agent is always first
-	available := []found{
-		{binary: "yu", display: "Yu Agent (built-in)", path: "built-in", builtin: true},
-	}
-
-	for _, agent := range knownAgentCLIs {
-		if path, err := exec.LookPath(agent.Binary); err == nil {
-			available = append(available, found{
-				binary:  agent.Binary,
-				display: agent.Display,
-				path:    path,
-			})
-		}
-	}
-
-	// Only built-in agent — just use it
-	if len(available) == 1 {
-		fmt.Println("[yu] Starting Yu Agent")
-		yuBin, _ := os.Executable()
-		return []string{yuBin, "agent-loop"}, nil
-	}
-
-	fmt.Println("[yu] Available agents:")
-	for i, a := range available {
-		fmt.Printf("  %d) %s (%s)\n", i+1, a.display, a.path)
-	}
-	fmt.Println()
-	fmt.Print("Choose [1]: ")
-
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	choice := 1
-	if input != "" {
+func resolveProjectDir() error {
+	if projectDir == "" {
 		var err error
-		choice, err = strconv.Atoi(input)
-		if err != nil || choice < 1 || choice > len(available) {
-			return nil, fmt.Errorf("invalid choice: %s", input)
+		projectDir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getting current directory: %w", err)
 		}
 	}
-
-	selected := available[choice-1]
-	if selected.builtin {
-		yuBin, _ := os.Executable()
-		return []string{yuBin, "agent-loop"}, nil
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("resolving directory: %w", err)
 	}
-	return []string{selected.binary}, nil
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+		return fmt.Errorf("not a directory: %s", abs)
+	}
+	projectDir = abs
+	return nil
 }
+
+// --- yu agent ---
+
+func agentCmd() *cobra.Command {
+	var (
+		modelFlag    string
+		providerFlag string
+		sessionFlag  string
+		newSession   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "agent",
+		Short: "Start the built-in AI agent (interactive)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAgent(modelFlag, providerFlag, sessionFlag, newSession, "")
+		},
+	}
+
+	cmd.Flags().StringVarP(&modelFlag, "model", "m", "", "model to use")
+	cmd.Flags().StringVarP(&providerFlag, "provider", "p", "", "provider (anthropic/openai/custom)")
+	cmd.Flags().StringVarP(&sessionFlag, "session", "s", "", "resume specific session ID")
+	cmd.Flags().BoolVar(&newSession, "new", false, "force new session")
+
+	// yu agent exec "prompt"
+	execCmd := &cobra.Command{
+		Use:   "exec [prompt]",
+		Short: "Execute a one-shot prompt and exit",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prompt := ""
+			if len(args) > 0 {
+				prompt = args[0]
+			}
+
+			// Read from file
+			fileFlag, _ := cmd.Flags().GetString("file")
+			if fileFlag != "" {
+				data, err := os.ReadFile(fileFlag)
+				if err != nil {
+					return fmt.Errorf("reading prompt file: %w", err)
+				}
+				prompt = string(data)
+			}
+
+			// Read from stdin if no prompt and not a terminal
+			if prompt == "" {
+				stat, _ := os.Stdin.Stat()
+				if stat.Mode()&os.ModeCharDevice == 0 {
+					data, err := os.ReadFile("/dev/stdin")
+					if err != nil {
+						return fmt.Errorf("reading stdin: %w", err)
+					}
+					prompt = strings.TrimSpace(string(data))
+				}
+			}
+
+			if prompt == "" {
+				return fmt.Errorf("no prompt provided. Usage: yu agent exec \"prompt\" or echo \"prompt\" | yu agent exec")
+			}
+
+			return runAgent(modelFlag, providerFlag, "", true, prompt)
+		},
+	}
+	execCmd.Flags().StringP("file", "f", "", "read prompt from file")
+	execCmd.Flags().StringVarP(&modelFlag, "model", "m", "", "model to use")
+	execCmd.Flags().StringVarP(&providerFlag, "provider", "p", "", "provider")
+
+	cmd.AddCommand(execCmd)
+	return cmd
+}
+
+func runAgent(model, provider, session string, newSession bool, execPrompt string) error {
+	cfg, err := config.Load(projectDir, "")
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Build agent-loop command with flags
+	yuBin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("finding executable: %w", err)
+	}
+
+	command := []string{yuBin, "agent-loop"}
+
+	// Pass config via environment
+	if model != "" {
+		os.Setenv("YU_MODEL", model)
+	} else if cfg.Agent.Model != "" {
+		os.Setenv("YU_MODEL", cfg.Agent.Model)
+	}
+	if provider != "" {
+		os.Setenv("YU_PROVIDER", provider)
+	}
+	if session != "" {
+		os.Setenv("YU_SESSION", session)
+	}
+	if newSession {
+		os.Setenv("YU_NEW_SESSION", "1")
+	}
+	if execPrompt != "" {
+		os.Setenv("YU_EXEC_PROMPT", execPrompt)
+	}
+
+	sb, err := sandbox.New(projectDir, command, cfg)
+	if err != nil {
+		return fmt.Errorf("creating sandbox: %w", err)
+	}
+	return sb.Run()
+}
+
+// --- yu wrap ---
+
+func wrapCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "wrap <command> [args...]",
+		Short:              "Run an external agent in the sandbox",
+		Long:               "Wraps Claude Code, Codex, Gemini CLI, or any command in Yu's sandbox.",
+		Args:               cobra.MinimumNArgs(1),
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(projectDir, "")
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+
+			sb, err := sandbox.New(projectDir, args, cfg)
+			if err != nil {
+				return fmt.Errorf("creating sandbox: %w", err)
+			}
+			return sb.Run()
+		},
+	}
+}
+
+// --- yu agent-loop (hidden, spawned by sandbox) ---
 
 func agentLoopCmd() *cobra.Command {
 	return &cobra.Command{
@@ -189,6 +223,8 @@ func agentLoopCmd() *cobra.Command {
 	}
 }
 
+// --- yu config ---
+
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
@@ -196,20 +232,18 @@ func configCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(&cobra.Command{
-		Use:   "init [dir]",
-		Short: "Initialize .yu/ in directory",
-		Args:  cobra.MaximumNArgs(1),
+		Use:   "init",
+		Short: "Initialize workspace config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return config.Init(resolveDir(args))
+			return config.Init(projectDir)
 		},
 	})
 
 	cmd.AddCommand(&cobra.Command{
-		Use:   "list [dir]",
+		Use:   "list",
 		Short: "Show merged configuration",
-		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(resolveDir(args), "")
+			cfg, err := config.Load(projectDir, "")
 			if err != nil {
 				return err
 			}
@@ -230,7 +264,6 @@ func configCmd() *cobra.Command {
 	setCmd.Flags().Bool("global", false, "set in global config (~/.config/yu/)")
 	cmd.AddCommand(setCmd)
 
-	// inject subcommand
 	injectCmd := &cobra.Command{
 		Use:   "inject",
 		Short: "Add an API proxy inject rule",
@@ -252,56 +285,53 @@ func configCmd() *cobra.Command {
 				headerMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 			}
 
-			return config.AddInjectRule(".", upstream, path, headerMap)
+			return config.AddInjectRule(projectDir, upstream, path, headerMap)
 		},
 	}
-	injectCmd.Flags().String("upstream", "", "upstream URL (e.g. https://api.company.com)")
-	injectCmd.Flags().String("path", "", "local proxy path prefix (e.g. /company-api)")
-	injectCmd.Flags().StringSlice("header", nil, "header to inject (e.g. \"Authorization: Bearer ${TOKEN}\")")
+	injectCmd.Flags().String("upstream", "", "upstream URL")
+	injectCmd.Flags().String("path", "", "local proxy path prefix")
+	injectCmd.Flags().StringSlice("header", nil, "header to inject")
 	cmd.AddCommand(injectCmd)
 
-	// inject-rm subcommand
 	cmd.AddCommand(&cobra.Command{
 		Use:   "inject-rm <path>",
 		Short: "Remove an inject rule by path prefix",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return config.RemoveInjectRule(".", args[0])
+			return config.RemoveInjectRule(projectDir, args[0])
 		},
 	})
 
-	// intercept add
 	cmd.AddCommand(&cobra.Command{
 		Use:   "intercept-add <command>",
-		Short: "Add a command to the proxy intercept list (e.g. wrangler, kubectl)",
+		Short: "Add a command to the proxy intercept list",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return config.AddIntercept(resolveDir(nil), args[0])
+			return config.AddIntercept(projectDir, args[0])
 		},
 	})
 
-	// intercept rm
 	cmd.AddCommand(&cobra.Command{
 		Use:   "intercept-rm <command>",
 		Short: "Remove a command from the proxy intercept list",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return config.RemoveIntercept(resolveDir(nil), args[0])
+			return config.RemoveIntercept(projectDir, args[0])
 		},
 	})
 
 	return cmd
 }
 
+// --- yu snapshots ---
+
 func snapshotsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "snapshots [dir]",
+		Use:   "snapshots",
 		Short: "List available snapshots",
-		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir := resolveDir(args)
-			cfg, _ := config.Load(dir, "")
-			s := snapshot.New(dir, cfg.Snapshot.Keep, nil)
+			cfg, _ := config.Load(projectDir, "")
+			s := snapshot.New(projectDir, cfg.Snapshot.Keep, nil)
 			snaps := s.List()
 			if len(snaps) == 0 {
 				fmt.Println("No snapshots found.")
@@ -319,6 +349,31 @@ func snapshotsCmd() *cobra.Command {
 	}
 }
 
+// --- yu rollback ---
+
+func rollbackCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rollback <id>",
+		Short: "Rollback to a snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return fmt.Errorf("invalid snapshot ID: %s", args[0])
+			}
+			cfg, _ := config.Load(projectDir, "")
+			s := snapshot.New(projectDir, cfg.Snapshot.Keep, nil)
+			if err := s.Rollback(id); err != nil {
+				return err
+			}
+			fmt.Printf("Rolled back to snapshot #%d\n", id)
+			return nil
+		},
+	}
+}
+
+// --- other commands ---
+
 func shimCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "shim",
@@ -326,28 +381,6 @@ func shimCmd() *cobra.Command {
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdproxy.RunShim(args)
-		},
-	}
-}
-
-func rollbackCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "rollback <id> [dir]",
-		Short: "Rollback to a snapshot",
-		Args:  cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := strconv.Atoi(args[0])
-			if err != nil {
-				return fmt.Errorf("invalid snapshot ID: %s", args[0])
-			}
-			dir := resolveDir(args[1:])
-			cfg, _ := config.Load(dir, "")
-			s := snapshot.New(dir, cfg.Snapshot.Keep, nil)
-			if err := s.Rollback(id); err != nil {
-				return err
-			}
-			fmt.Printf("Rolled back to snapshot #%d\n", id)
-			return nil
 		},
 	}
 }
@@ -370,17 +403,4 @@ func pairCmd() *cobra.Command {
 			return cloud.Pair()
 		},
 	}
-}
-
-// resolveDir returns the directory from args[0] or cwd if not provided.
-func resolveDir(args []string) string {
-	if len(args) > 0 && args[0] != "" {
-		abs, err := filepath.Abs(args[0])
-		if err == nil {
-			return abs
-		}
-		return args[0]
-	}
-	dir, _ := os.Getwd()
-	return dir
 }

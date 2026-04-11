@@ -58,7 +58,7 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 func Main() {
 	if os.Getenv("YU_SANDBOX") != "1" {
 		fmt.Fprintln(os.Stderr, "yu agent-loop must be run inside a yu sandbox.")
-		fmt.Fprintln(os.Stderr, "Use: yu <dir>")
+		fmt.Fprintln(os.Stderr, "Use: yu agent")
 		os.Exit(1)
 	}
 
@@ -118,8 +118,22 @@ func Main() {
 		os.Exit(0)
 	}()
 
-	// Session
-	session := resolveSession(wsDir, model)
+	// Session resolution
+	execPrompt := os.Getenv("YU_EXEC_PROMPT")
+	var session *Session
+	if os.Getenv("YU_NEW_SESSION") == "1" || execPrompt != "" {
+		session = NewSession(model)
+	} else if sid := os.Getenv("YU_SESSION"); sid != "" {
+		loaded, err := LoadSession(wsDir, sid)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Session %s not found, starting new\n", sid)
+			session = NewSession(model)
+		} else {
+			session = loaded
+		}
+	} else {
+		session = resolveSession(wsDir, model)
+	}
 	if session.Model != "" && session.Model != model {
 		model = session.Model
 		newKey, newBase := detectAPIConfig(model)
@@ -132,7 +146,26 @@ func Main() {
 	memoryFile := findMemoryFile(wsDir)
 	system := buildSystemPrompt(projectDir, memoryFile)
 
-	// Readline
+	// --- Exec mode: one-shot, no interactive UI ---
+	if execPrompt != "" {
+		session.Messages = append(session.Messages, Message{
+			Role:    "user",
+			Content: []ContentBlock{{Type: "text", Text: execPrompt}},
+		})
+		err := agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println()
+		if wsDir != "" {
+			session.Save(wsDir)
+		}
+		bgManager.StopAll()
+		return
+	}
+
+	// --- Interactive mode ---
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:            promptString(model, bgManager.RunningCount()),
 		HistoryFile:       historyFile(wsDir),
