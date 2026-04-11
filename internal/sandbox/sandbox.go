@@ -141,6 +141,12 @@ func (s *Sandbox) Run() error {
 	yuLogStderr("Starting command proxy")
 	socketPath := filepath.Join(s.TmpDir, "cmdproxy.sock")
 	s.cmdDaemon = cmdproxy.NewDaemon(socketPath, s.Config.Credentials, s.ProjectDir, s.TmpDir)
+	// Set command whitelist — only these commands can be executed through the proxy
+	allowed := make(map[string]bool)
+	for _, cmd := range s.Config.Commands.Intercept {
+		allowed[cmd] = true
+	}
+	s.cmdDaemon.AllowedCmds = allowed
 	s.cmdDaemon.PreCommandHook = s.watcher.PreCommand
 	if err := s.cmdDaemon.Start(); err != nil {
 		return fmt.Errorf("starting command proxy: %w", err)

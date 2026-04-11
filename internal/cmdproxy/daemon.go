@@ -22,6 +22,7 @@ type Daemon struct {
 	Env            map[string]string // credentials from .yu/env
 	ProjectDir     string            // allowed read/write directory
 	TmpDir         string            // sandbox temp dir (for profile file)
+	AllowedCmds    map[string]bool   // whitelist of commands the daemon will execute
 	PreCommandHook PreCommandHook
 	listener       net.Listener
 	wg             sync.WaitGroup
@@ -82,6 +83,12 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	var req Request
 	if err := ReadMessage(conn, &req); err != nil {
 		d.sendError(conn, fmt.Sprintf("reading request: %v", err), 1)
+		return
+	}
+
+	// Validate command against whitelist
+	if !d.AllowedCmds[req.Command] {
+		d.sendError(conn, fmt.Sprintf("command %q not in allowed list", req.Command), 126)
 		return
 	}
 
