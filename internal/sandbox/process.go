@@ -130,6 +130,7 @@ func (s *Sandbox) launch() (int, error) {
 		// Allow ~/.claude (Claude Code config, sessions, history)
 		allowPaths = append(allowPaths, filepath.Join(realHome, ".local"))
 		allowPaths = append(allowPaths, filepath.Join(realHome, ".claude"))
+		allowPaths = append(allowPaths, filepath.Join(realHome, ".bun"))
 
 		// Resolve command to absolute path so sandbox doesn't need PATH lookup
 		if binPath, err := exec.LookPath(command[0]); err == nil {
