@@ -118,9 +118,17 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Neutralize git hooks — the sandbox can write to .git/hooks/ and
+	// commands run by cmdproxy execute on the host without sandbox
+	// restrictions, so a malicious hook would be full escape.
+	args := req.Args
+	if req.Command == "git" {
+		args = append([]string{"-c", "core.hooksPath=/dev/null"}, args...)
+	}
+
 	// Execute with credential injection, inside a sandbox that only
 	// allows the project dir + credential-related files.
-	cmdName, cmdArgs := d.wrapWithSandbox(realCmd, req.Args)
+	cmdName, cmdArgs := d.wrapWithSandbox(realCmd, args)
 	cmd := exec.Command(cmdName, cmdArgs...)
 	cmd.Dir = req.Cwd
 	cmd.Env = d.buildExecEnv()
