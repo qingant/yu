@@ -220,7 +220,7 @@ func Main() {
 
 	for {
 		rl.SetPrompt(promptString(model, bgManager.RunningCount()))
-		input, err := readMultiLine(rl, model, bgManager)
+		input, err := readMultiLine(rl, model, bgManager, pasteIn)
 		if err != nil {
 			if err == readline.ErrInterrupt {
 				continue
@@ -376,16 +376,41 @@ func Main() {
 //     end with a line that is just ``` to submit
 //
 // In all cases, Ctrl+C cancels the multi-line input.
-func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string, error) {
+func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn *pasteStdin) (string, error) {
 	line, err := rl.Readline()
 	if err != nil {
 		return "", err
 	}
-	// Restore newlines from paste placeholder (U+2028 → \n)
+
+	// Bracketed paste: content was buffered, readline auto-submitted ""
+	if paste := pasteIn.TakePaste(); paste != "" {
+		typed := strings.TrimSpace(line)
+		var result string
+		if typed != "" {
+			result = typed + "\n" + paste
+		} else {
+			result = paste
+		}
+		result = strings.TrimSpace(result)
+		// Echo what was pasted
+		lines := strings.Split(result, "\n")
+		if len(lines) > 5 {
+			for _, l := range lines[:3] {
+				fmt.Printf("  %s%s%s\n", dim, l, reset)
+			}
+			fmt.Printf("  %s… (%d lines pasted)%s\n", dim, len(lines), reset)
+		} else {
+			for _, l := range lines {
+				fmt.Printf("  %s%s%s\n", dim, l, reset)
+			}
+		}
+		return result, nil
+	}
+
+	// Non-bracketed fallback: restore U+2028 → \n
 	line = restorePasteNewlines(line)
 	line = strings.TrimRight(line, " \t")
 
-	// If paste contained newlines, they're already in the line — return as-is
 	if strings.Contains(line, "\n") {
 		return strings.TrimSpace(line), nil
 	}
