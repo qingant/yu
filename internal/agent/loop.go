@@ -334,10 +334,11 @@ func Main() {
 
 		inTurn.Store(false)
 		turnCancel.Store(nil)
+		wasInterrupted := thisTurnCtx.Err() != nil // check BEFORE cancel
 		thisTurnCancel()
 
 		if turnErr != nil {
-			if thisTurnCtx.Err() != nil {
+			if wasInterrupted {
 				fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
 				// Remove the last user message so the turn can be retried
 				if len(session.Messages) > 0 && session.Messages[len(session.Messages)-1].Role == "user" {
