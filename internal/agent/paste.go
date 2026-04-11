@@ -21,23 +21,31 @@ var (
 // used to replace \n inside pasted text so readline doesn't treat it as Enter.
 const pasteNewline = '\u2028'
 
-// pasteStdin wraps the real stdin to support bracketed paste.
-// When the terminal sends \033[200~ ... \033[201~, newlines within the paste
-// are replaced with pasteNewline (U+2028) so readline sees them as regular chars.
-// After readline returns, the caller replaces U+2028 back to \n.
+// pasteStdin wraps the real stdin to support multi-line paste.
+//
+// Two modes:
+//  1. Bracketed paste (terminal sends \033[200~ ... \033[201~):
+//     The entire paste is buffered internally. readline only sees \r (submit).
+//     readMultiLine picks up the paste via TakePaste(). No character-by-character
+//     redraw, no visual noise.
+//  2. Non-bracketed fallback: \n bytes are replaced with U+2028 placeholders
+//     (in raw mode, Enter sends \r, so \n is always from paste). readline sees
+//     a single line with placeholders, which are restored to \n after submit.
 type pasteStdin struct {
 	real            io.Reader
 	mu              sync.Mutex
 	buf             []byte // leftover bytes from last read
 	inPaste         bool
-	matchBuf        []byte // partial match buffer for escape sequences
-	seenPasteMarker bool   // true once we've seen \033[200~ (terminal supports bracketed paste)
+	matchBuf        []byte       // partial match buffer for escape sequences
+	seenPasteMarker bool         // true once we've seen \033[200~
+	pasteContent    bytes.Buffer // content during active bracketed paste
+	completedPaste  string       // paste ready for pickup by readMultiLine
+	sendSubmit      bool         // true = next Read returns \r to trigger readline submit
 }
 
 // newPasteStdin creates a paste-aware stdin wrapper and enables bracketed
 // paste mode on the terminal.
 func newPasteStdin() *pasteStdin {
-	// Enable bracketed paste mode
 	os.Stdout.Write(pasteEnable)
 	return &pasteStdin{real: os.Stdin}
 }
@@ -45,6 +53,15 @@ func newPasteStdin() *pasteStdin {
 func (p *pasteStdin) Read(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// After a bracketed paste completed, send \r to make readline submit.
+	// readline's buffer is empty (paste content was absorbed), so it submits "".
+	// readMultiLine then picks up the real paste via TakePaste().
+	if p.sendSubmit {
+		p.sendSubmit = false
+		b[0] = '\r'
+		return 1, nil
+	}
 
 	// Drain leftover buffer first
 	if len(p.buf) > 0 {
@@ -67,13 +84,30 @@ func (p *pasteStdin) Read(b []byte) (int, error) {
 		p.matchBuf = nil
 	}
 
-	// Process the data: find paste start/end markers, replace newlines
+	// Process: detect paste markers, buffer paste content
 	out := p.process(data)
 
-	// In raw mode (during readline), Enter sends \r and paste newlines are \n.
-	// Always replace \n with placeholder — it's never Enter in raw mode.
-	// This serves as defense-in-depth: works whether bracketed paste is
-	// active or not, and regardless of chunk boundaries.
+	// If paste just completed, trigger readline submit instead of
+	// returning the processed data. Any post-marker data in 'out'
+	// is saved for the next Read.
+	if p.sendSubmit {
+		if len(out) > 0 {
+			p.buf = append(p.buf, out...)
+		}
+		p.sendSubmit = false
+		b[0] = '\r'
+		return 1, nil
+	}
+
+	// If we're mid-paste, all content was absorbed into pasteContent.
+	// Return 0 so the bufio reader retries (paste data arrives fast).
+	if p.inPaste && len(out) == 0 {
+		// Return 0, nil — bufio reader will call Read again
+		return 0, nil
+	}
+
+	// Non-bracketed fallback: in raw mode, \n is always from paste
+	// (Enter sends \r). Replace with placeholder.
 	if !p.inPaste {
 		out = replacePasteNewlines(out)
 	}
@@ -89,7 +123,6 @@ func (p *pasteStdin) process(data []byte) []byte {
 	var out bytes.Buffer
 	i := 0
 	for i < len(data) {
-		// Check for escape sequence start
 		if data[i] == '\033' {
 			remaining := data[i:]
 
@@ -97,10 +130,10 @@ func (p *pasteStdin) process(data []byte) []byte {
 			if matchResult := matchSeq(remaining, pasteStart); matchResult == matchFull {
 				p.inPaste = true
 				p.seenPasteMarker = true
+				p.pasteContent.Reset()
 				i += len(pasteStart)
 				continue
 			} else if matchResult == matchPartial {
-				// Save for next Read call
 				p.matchBuf = append(p.matchBuf, remaining...)
 				return out.Bytes()
 			}
@@ -108,6 +141,9 @@ func (p *pasteStdin) process(data []byte) []byte {
 			// Check for paste end: \033[201~
 			if matchResult := matchSeq(remaining, pasteEnd); matchResult == matchFull {
 				p.inPaste = false
+				p.completedPaste = p.pasteContent.String()
+				p.pasteContent.Reset()
+				p.sendSubmit = true
 				i += len(pasteEnd)
 				continue
 			} else if matchResult == matchPartial {
@@ -116,21 +152,9 @@ func (p *pasteStdin) process(data []byte) []byte {
 			}
 		}
 
-		// Inside paste: replace \n and \r\n with placeholder
-		if p.inPaste && (data[i] == '\n' || data[i] == '\r') {
-			if data[i] == '\r' {
-				// Skip \r, the \n following it (if any) will be replaced
-				if i+1 < len(data) && data[i+1] == '\n' {
-					i++ // skip \r, handle \n below
-				} else {
-					// Bare \r — replace with placeholder
-					writeRune(&out, pasteNewline)
-					i++
-					continue
-				}
-			}
-			// Replace \n with placeholder (UTF-8 encoded U+2028)
-			writeRune(&out, pasteNewline)
+		// Inside bracketed paste: buffer content directly (preserve newlines)
+		if p.inPaste {
+			p.pasteContent.WriteByte(data[i])
 			i++
 			continue
 		}
@@ -141,8 +165,17 @@ func (p *pasteStdin) process(data []byte) []byte {
 	return out.Bytes()
 }
 
+// TakePaste returns and clears any completed bracketed paste content.
+// Called by readMultiLine after readline returns.
+func (p *pasteStdin) TakePaste() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	paste := p.completedPaste
+	p.completedPaste = ""
+	return paste
+}
+
 func (p *pasteStdin) Close() error {
-	// Disable bracketed paste mode
 	os.Stdout.Write(pasteDisable)
 	if c, ok := p.real.(io.Closer); ok {
 		return c.Close()
@@ -166,7 +199,6 @@ func matchSeq(data, seq []byte) matchType {
 		}
 		return matchNone
 	}
-	// data is shorter than seq — check if it's a prefix
 	if bytes.Equal(data, seq[:len(data)]) {
 		return matchPartial
 	}
@@ -191,7 +223,6 @@ func replacePasteNewlines(data []byte) []byte {
 		if data[i] == '\n' {
 			writeRune(&out, pasteNewline)
 		} else if data[i] == '\r' && i+1 < len(data) && data[i+1] == '\n' {
-			// \r\n → single placeholder
 			writeRune(&out, pasteNewline)
 			i++ // skip the \n
 		} else {
@@ -210,8 +241,3 @@ func (p *pasteStdin) Inject(data []byte) {
 	defer p.mu.Unlock()
 	p.buf = append(data, p.buf...)
 }
-
-// Note: WatchForCancel was removed. readline exits raw mode after Readline(),
-// so during agent turns the terminal is in cooked mode and Ctrl-C generates
-// SIGINT (handled by the signal handler in Main). Reading stdin during turns
-// caused false cancellations from stale terminal escape sequences.

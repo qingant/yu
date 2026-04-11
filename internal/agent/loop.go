@@ -220,7 +220,7 @@ func Main() {
 
 	for {
 		rl.SetPrompt(promptString(model, bgManager.RunningCount()))
-		input, err := readMultiLine(rl, model, bgManager)
+		input, err := readMultiLine(rl, model, bgManager, pasteIn)
 		if err != nil {
 			if err == readline.ErrInterrupt {
 				continue
@@ -376,12 +376,24 @@ func Main() {
 //     end with a line that is just ``` to submit
 //
 // In all cases, Ctrl+C cancels the multi-line input.
-func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string, error) {
+func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn *pasteStdin) (string, error) {
 	line, err := rl.Readline()
 	if err != nil {
 		return "", err
 	}
-	// Restore newlines from paste placeholder (U+2028 → \n)
+
+	// Bracketed paste: content was buffered in pasteStdin, readline got ""
+	if paste := pasteIn.TakePaste(); paste != "" {
+		combined := strings.TrimSpace(line)
+		if combined != "" {
+			combined += "\n" + paste
+		} else {
+			combined = paste
+		}
+		return strings.TrimSpace(combined), nil
+	}
+
+	// Non-bracketed fallback: restore U+2028 placeholders to \n
 	line = restorePasteNewlines(line)
 	line = strings.TrimRight(line, " \t")
 
