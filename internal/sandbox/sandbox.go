@@ -362,16 +362,6 @@ func (s *Sandbox) configureKeyReplacements() {
 			continue
 		}
 
-		// Ensure ALL key env names in the route get dummies, even if the user
-		// only set one. e.g. user sets ANTHROPIC_AUTH_TOKEN but Claude Code
-		// checks ANTHROPIC_API_KEY — both need a dummy pointing to the proxy.
-		firstDummy := replacements[0].Dummy
-		for _, keyEnv := range route.KeyEnvs {
-			if _, exists := s.dummyKeys[keyEnv]; !exists {
-				s.dummyKeys[keyEnv] = firstDummy
-			}
-		}
-
 		// Determine upstream: custom BASE_URL → default URL (built-in agent only)
 		// External agents only get proxied when user has set a custom BASE_URL,
 		// so they can use their own OAuth on the official endpoint.
