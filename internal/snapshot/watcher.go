@@ -192,7 +192,7 @@ func (w *Watcher) shouldIgnore(path string) bool {
 	}
 	parts := strings.Split(rel, string(os.PathSeparator))
 	for _, p := range parts {
-		if p == ".git" {
+		if strings.HasPrefix(p, ".") || skipDirs[p] {
 			return true
 		}
 	}
@@ -215,7 +215,8 @@ func (w *Watcher) addDirRecursive(root string) {
 			return nil
 		}
 		if info.IsDir() {
-			if skipDirs[info.Name()] {
+			name := info.Name()
+			if strings.HasPrefix(name, ".") || skipDirs[name] {
 				return filepath.SkipDir
 			}
 			if err := w.fsWatcher.Add(path); err != nil {
