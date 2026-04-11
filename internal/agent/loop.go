@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
-	"golang.org/x/term"
 )
 
 // slashCommands defines all available commands for tab completion.
@@ -381,32 +380,30 @@ func expandAtFiles(input, projectDir string) (display string, expanded string) {
 
 // --- Welcome & History ---
 
-// watchEsc reads raw stdin and calls cancel if Esc (0x1B) is pressed.
-// Stops when stopCh is closed.
+// watchEsc watches for Esc key and calls cancel if pressed.
+// Uses a separate goroutine with blocking read to avoid interfering
+// with readline's terminal state management.
 func watchEsc(cancel context.CancelFunc, stopCh <-chan struct{}) {
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
-
-	buf := make([]byte, 1)
-	for {
-		select {
-		case <-stopCh:
-			return
-		default:
+	ch := make(chan struct{}, 1)
+	go func() {
+		buf := make([]byte, 16)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				return
+			}
+			for i := 0; i < n; i++ {
+				if buf[i] == 0x1B {
+					ch <- struct{}{}
+					return
+				}
+			}
 		}
-		os.Stdin.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-		n, err := os.Stdin.Read(buf)
-		if n > 0 && buf[0] == 0x1B { // Esc
-			cancel()
-			return
-		}
-		if err != nil {
-			// timeout or EOF — keep looping
-			continue
-		}
+	}()
+	select {
+	case <-stopCh:
+	case <-ch:
+		cancel()
 	}
 }
 
