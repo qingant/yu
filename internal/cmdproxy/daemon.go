@@ -100,6 +100,12 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Validate no arguments reference paths outside the project directory
+	if violation := checkArgsForExternalPaths(req.Command, req.Args, cleanProject); violation != "" {
+		d.sendError(conn, fmt.Sprintf("blocked: argument references path outside project: %s", violation), 126)
+		return
+	}
+
 	// Call pre-command hook (e.g., snapshot)
 	if d.PreCommandHook != nil {
 		d.PreCommandHook(req.Command)
@@ -214,6 +220,86 @@ func setExecEnv(env []string, key, value string) []string {
 		}
 	}
 	return append(env, prefix+value)
+}
+
+// checkArgsForExternalPaths scans command arguments for absolute paths
+// outside the project directory. Returns the violating path or "".
+func checkArgsForExternalPaths(command string, args []string, projectDir string) string {
+	home, _ := os.UserHomeDir()
+
+	// Flags whose next argument is a message/pattern, not a path — skip them
+	messageFlags := map[string]bool{
+		"-m": true, "--message": true,
+		"-F": true, // git commit -F (message file — but also could be dangerous, keep checking for now)
+		"--grep": true, "--author": true, "--format": true,
+		"--pretty": true,
+	}
+
+	skipNext := false
+	for _, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if messageFlags[arg] {
+			skipNext = true
+			continue
+		}
+
+		// Scan the argument for absolute paths
+		if path := findExternalPath(arg, projectDir, home); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// findExternalPath checks if a string contains an absolute path outside projectDir.
+// Scans for /path and ~/path patterns anywhere in the string (catches -o Key=/path).
+func findExternalPath(s, projectDir, home string) string {
+	// Expand ~ to home dir for checking
+	expanded := strings.ReplaceAll(s, "~/", home+"/")
+	expanded = strings.ReplaceAll(expanded, "~\"", home+"\"")
+	expanded = strings.ReplaceAll(expanded, "~'", home+"'")
+
+	// Find all absolute path-like substrings
+	for i := 0; i < len(expanded); i++ {
+		if expanded[i] != '/' {
+			continue
+		}
+		// Extract the path (until space, quote, or end)
+		end := i + 1
+		for end < len(expanded) {
+			c := expanded[end]
+			if c == ' ' || c == '\t' || c == '"' || c == '\'' || c == ';' || c == '|' || c == '&' {
+				break
+			}
+			end++
+		}
+		path := expanded[i:end]
+		if len(path) < 2 {
+			continue
+		}
+
+		// Allow paths within project dir
+		if strings.HasPrefix(path, projectDir+"/") || path == projectDir {
+			continue
+		}
+
+		// Allow system paths (binaries, libraries — not user data)
+		if strings.HasPrefix(path, "/usr/") || strings.HasPrefix(path, "/bin/") ||
+			strings.HasPrefix(path, "/sbin/") || strings.HasPrefix(path, "/opt/") ||
+			strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/var/") ||
+			strings.HasPrefix(path, "/dev/") || strings.HasPrefix(path, "/etc/") ||
+			strings.HasPrefix(path, "/Library/") || strings.HasPrefix(path, "/System/") ||
+			strings.HasPrefix(path, "/Applications/") || strings.HasPrefix(path, "/private/") {
+			continue
+		}
+
+		// This is a user path outside the project — block it
+		return path
+	}
+	return ""
 }
 
 // wrapWithSandbox wraps a command with sandbox-exec on macOS.
