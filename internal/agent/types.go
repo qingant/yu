@@ -46,17 +46,24 @@ type ImageURL struct {
 	URL string `json:"url"` // "data:image/png;base64,..."
 }
 
+// CacheControl marks a block for Anthropic prompt caching.
+type CacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
 // SystemBlock is a system prompt section.
 type SystemBlock struct {
-	Type string `json:"type"` // "text"
-	Text string `json:"text"`
+	Type         string        `json:"type"` // "text"
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // ToolDef defines a tool the model can call.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
 }
 
 // --- Anthropic API request/response ---
@@ -82,8 +89,10 @@ type MessagesResponse struct {
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // --- SSE streaming types ---

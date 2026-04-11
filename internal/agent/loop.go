@@ -31,8 +31,10 @@ var slashCommands = []string{
 
 // stats tracks token usage across turns.
 type stats struct {
-	totalInput  atomic.Int64
-	totalOutput atomic.Int64
+	totalInput      atomic.Int64
+	totalOutput     atomic.Int64
+	totalCacheRead  atomic.Int64
+	totalCacheWrite atomic.Int64
 }
 
 // ANSI helpers
@@ -250,7 +252,8 @@ func Main() {
 		elapsed := time.Since(turnStart)
 		newTokens := st.totalInput.Load() + st.totalOutput.Load()
 		turnTokens := newTokens - prevTokens
-		printTurnStats(turnTokens, elapsed)
+		cacheRead := st.totalCacheRead.Load()
+		printTurnStats(turnTokens, cacheRead, elapsed)
 
 		// Auto-save
 		if wsDir != "" {
@@ -369,11 +372,15 @@ func truncateHistory(s string, maxLen int) string {
 
 // --- Turn Stats ---
 
-func printTurnStats(tokens int64, elapsed time.Duration) {
+func printTurnStats(tokens int64, cacheRead int64, elapsed time.Duration) {
 	now := time.Now().Format("15:04:05")
 	emoji := randomEmoji()
-	fmt.Printf("\n\n  %s%s  %s  %s  %s%s\n\n",
-		dim, emoji, formatTokens(tokens), formatDuration(elapsed), now, reset)
+	cache := ""
+	if cacheRead > 0 {
+		cache = fmt.Sprintf("  cached:%s", formatTokens(cacheRead))
+	}
+	fmt.Printf("\n\n  %s%s  %s%s  %s  %s%s\n\n",
+		dim, emoji, formatTokens(tokens), cache, formatDuration(elapsed), now, reset)
 }
 
 // --- Prompt ---
@@ -413,6 +420,8 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 
 		st.totalInput.Add(int64(response.InputTokens))
 		st.totalOutput.Add(int64(response.OutputTokens))
+		st.totalCacheRead.Add(int64(response.CacheReadTokens))
+		st.totalCacheWrite.Add(int64(response.CacheWriteTokens))
 
 		*messages = append(*messages, Message{
 			Role:    "assistant",
@@ -611,10 +620,12 @@ func (s *spinnerState) Stop() {
 // --- Stream Processing ---
 
 type streamResponse struct {
-	Blocks       []ContentBlock
-	StopReason   string
-	InputTokens  int
-	OutputTokens int
+	Blocks          []ContentBlock
+	StopReason      string
+	InputTokens     int
+	OutputTokens    int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // processStream reads streaming events, prints text in real-time, and returns the full response.
@@ -635,6 +646,8 @@ func processStream(ch <-chan StreamEvent, spinner *spinnerState) (*streamRespons
 		case "message_start":
 			if evt.Message != nil {
 				resp.InputTokens = evt.Message.Usage.InputTokens
+				resp.CacheReadTokens = evt.Message.Usage.CacheReadInputTokens
+				resp.CacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
 			}
 
 		case "content_block_start":

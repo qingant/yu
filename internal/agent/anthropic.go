@@ -22,12 +22,27 @@ type AnthropicProvider struct {
 }
 
 func (p *AnthropicProvider) Stream(ctx context.Context, system []SystemBlock, messages []Message, tools []ToolDef) (<-chan StreamEvent, error) {
+	// Mark cache breakpoints for prompt caching:
+	// - Last system block: caches all system content
+	// - Last tool: caches all tool definitions
+	cachedSystem := make([]SystemBlock, len(system))
+	copy(cachedSystem, system)
+	if len(cachedSystem) > 0 {
+		cachedSystem[len(cachedSystem)-1].CacheControl = &CacheControl{Type: "ephemeral"}
+	}
+
+	cachedTools := make([]ToolDef, len(tools))
+	copy(cachedTools, tools)
+	if len(cachedTools) > 0 {
+		cachedTools[len(cachedTools)-1].CacheControl = &CacheControl{Type: "ephemeral"}
+	}
+
 	req := MessagesRequest{
 		Model:     p.Model,
 		MaxTokens: p.MaxTokens,
-		System:    system,
+		System:    cachedSystem,
 		Messages:  messages,
-		Tools:     tools,
+		Tools:     cachedTools,
 		Stream:    true,
 	}
 
@@ -51,6 +66,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, system []SystemBlock, me
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", p.APIKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
