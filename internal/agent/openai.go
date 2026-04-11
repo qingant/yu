@@ -26,12 +26,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, system []SystemBlock, messa
 	oaiTools := convertToolsToOpenAI(tools)
 
 	req := OpenAIChatRequest{
-		Model:     p.Model,
-		Messages:  oaiMessages,
-		Tools:     oaiTools,
-		MaxTokens: p.MaxTokens,
-		Stream:    true,
-		StreamOptions: &OpenAIStreamOptions{IncludeUsage: true},
+		Model:               p.Model,
+		Messages:            oaiMessages,
+		Tools:               oaiTools,
+		MaxCompletionTokens: p.MaxTokens,
+		Stream:              true,
+		StreamOptions:       &OpenAIStreamOptions{IncludeUsage: true},
 	}
 
 	body, err := json.Marshal(req)
@@ -39,7 +39,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, system []SystemBlock, messa
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := strings.TrimSuffix(p.BaseURL, "/") + "/v1/chat/completions"
+	url := buildOpenAIURL(p.BaseURL, "/chat/completions")
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -62,6 +62,20 @@ func (p *OpenAIProvider) Stream(ctx context.Context, system []SystemBlock, messa
 	ch := make(chan StreamEvent, 32)
 	go parseOpenAISSE(resp.Body, ch)
 	return ch, nil
+}
+
+// buildOpenAIURL constructs the full API URL from a base URL and path suffix.
+// Handles base URLs that already include versioned paths like /v1, /v1beta/openai, etc.
+func buildOpenAIURL(baseURL, path string) string {
+	base := strings.TrimSuffix(baseURL, "/")
+	// If base already ends with a path that indicates it's a versioned API root
+	// (e.g. /v1, /v1beta/openai), don't add /v1
+	if strings.HasSuffix(base, "/v1") ||
+		strings.Contains(base, "/v1beta/") ||
+		strings.Contains(base, "/v1/") {
+		return base + path
+	}
+	return base + "/v1" + path
 }
 
 // convertToOpenAI converts internal Message format to OpenAI format.
@@ -163,6 +177,8 @@ func convertToOpenAI(system []SystemBlock, messages []Message) []OpenAIMessage {
 			if textParts.Len() > 0 {
 				msg.Content = textParts.String()
 			}
+			// OpenAI requires content: null (not missing) when tool_calls present
+			// Go's nil any marshals to JSON null, which is what we want
 			oai = append(oai, msg)
 		}
 	}
@@ -213,13 +229,6 @@ func parseOpenAISSE(body io.ReadCloser, ch chan<- StreamEvent) {
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			// Finalize any open tool calls
-			for idx := range toolCallArgs {
-				ch <- StreamEvent{
-					Type:  "content_block_stop",
-					Index: idx + 1, // offset by 1 since text block is 0
-				}
-			}
 			ch <- StreamEvent{Type: "message_stop"}
 			return
 		}
@@ -317,11 +326,21 @@ func parseOpenAISSE(body io.ReadCloser, ch chan<- StreamEvent) {
 			}
 		}
 
-		// Finish reason
+		// Finish reason — OpenAI: "stop" | "tool_calls" | "length"
 		if choice.FinishReason != "" {
 			if startedText {
 				ch <- StreamEvent{Type: "content_block_stop", Index: 0}
+				startedText = false
 			}
+
+			// Close any open tool call blocks
+			for idx := range toolCallArgs {
+				ch <- StreamEvent{
+					Type:  "content_block_stop",
+					Index: idx + 1,
+				}
+			}
+			toolCallArgs = make(map[int]*strings.Builder)
 
 			stopReason := "end_turn"
 			if choice.FinishReason == "tool_calls" {

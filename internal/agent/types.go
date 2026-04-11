@@ -122,12 +122,12 @@ type StreamDelta struct {
 // --- OpenAI Chat Completions types ---
 
 type OpenAIChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Stream      bool            `json:"stream"`
-	StreamOptions *OpenAIStreamOptions `json:"stream_options,omitempty"`
+	Model               string              `json:"model"`
+	Messages            []OpenAIMessage     `json:"messages"`
+	Tools               []OpenAITool        `json:"tools,omitempty"`
+	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
+	Stream              bool                `json:"stream"`
+	StreamOptions       *OpenAIStreamOptions `json:"stream_options,omitempty"`
 }
 
 type OpenAIStreamOptions struct {
@@ -135,10 +135,10 @@ type OpenAIStreamOptions struct {
 }
 
 type OpenAIMessage struct {
-	Role       string              `json:"role"` // "system" | "user" | "assistant" | "tool"
-	Content    any                 `json:"content,omitempty"` // string or []OpenAIContentPart
+	Role       string              `json:"role"`                    // "system" | "user" | "assistant" | "tool"
+	Content    any                 `json:"content"`                 // string, []OpenAIContentPart, or nil
 	ToolCalls  []OpenAIToolCall    `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"` // for role=tool
+	ToolCallID string              `json:"tool_call_id,omitempty"`  // for role=tool
 }
 
 type OpenAIContentPart struct {
@@ -159,15 +159,15 @@ type OpenAIFunction struct {
 }
 
 type OpenAIToolCall struct {
-	Index    int            `json:"index"`
-	ID       string         `json:"id"`
-	Type     string         `json:"type"` // "function"
+	Index    int            `json:"index,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Type     string         `json:"type,omitempty"`
 	Function OpenAIFuncCall `json:"function"`
 }
 
 type OpenAIFuncCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type OpenAIChatResponse struct {

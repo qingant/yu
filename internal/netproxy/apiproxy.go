@@ -118,6 +118,21 @@ func (ap *APIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upReq.Header.Del("Connection")
 	upReq.Header.Del("Proxy-Connection")
 
+	// Debug: log outgoing headers
+	if ap.auditFn != nil {
+		var hdrs []string
+		for k, v := range upReq.Header {
+			val := strings.Join(v, ", ")
+			if k == "Authorization" || k == "X-Api-Key" || k == "X-Goog-Api-Key" {
+				if len(val) > 20 {
+					val = val[:20] + "..."
+				}
+			}
+			hdrs = append(hdrs, k+": "+val)
+		}
+		ap.auditFn(r.Method, upstream.String(), 0, "headers: "+strings.Join(hdrs, " | "))
+	}
+
 	// Forward
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(upReq)
@@ -249,8 +264,20 @@ func (ap *APIProxy) handleWebSocket(w http.ResponseWriter, r *http.Request, rout
 	}()
 }
 
+// authHeaders are headers that carry credentials — never copy from agent to upstream.
+// Agent sends dummy keys; real auth comes exclusively from ForceHeaders.
+var authHeaders = map[string]bool{
+	"Authorization":   true,
+	"X-Api-Key":       true,
+	"X-Goog-Api-Key":  true,
+}
+
 func (ap *APIProxy) copyHeaders(src, dst http.Header, route *APIRoute) {
+	// Copy non-auth headers from agent, with dummy key replacement
 	for key, values := range src {
+		if authHeaders[http.CanonicalHeaderKey(key)] {
+			continue // skip — auth is handled by ForceHeaders
+		}
 		for _, v := range values {
 			replaced := v
 			for _, rep := range route.KeyReplacements {
@@ -261,7 +288,7 @@ func (ap *APIProxy) copyHeaders(src, dst http.Header, route *APIRoute) {
 			dst.Add(key, replaced)
 		}
 	}
-	// Force-set headers last — overrides anything the agent sent
+	// Set real auth from ForceHeaders — this is the ONLY source of credentials
 	for k, v := range route.ForceHeaders {
 		dst.Set(k, v)
 	}

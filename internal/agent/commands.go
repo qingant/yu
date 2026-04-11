@@ -226,9 +226,12 @@ var anthropicModels = []modelInfo{
 
 var openaiModels = []modelInfo{
 	{ID: "gpt-5.4", Display: "GPT-5.4"},
+	{ID: "gpt-5.4-mini", Display: "GPT-5.4 Mini"},
+	{ID: "gpt-5.4-nano", Display: "GPT-5.4 Nano"},
 	{ID: "o3-pro", Display: "o3-pro"},
 	{ID: "o3", Display: "o3"},
 	{ID: "o4-mini", Display: "o4-mini"},
+	{ID: "o3-mini", Display: "o3-mini"},
 	{ID: "gpt-4.1", Display: "GPT-4.1"},
 	{ID: "gpt-4.1-mini", Display: "GPT-4.1 Mini"},
 	{ID: "gpt-4.1-nano", Display: "GPT-4.1 Nano"},
@@ -386,7 +389,7 @@ func fetchCustomModels(baseURL, apiKey string) []modelInfo {
 		return customModelCache
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + "/v1/models"
+	url := buildOpenAIURL(baseURL, "/models")
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil

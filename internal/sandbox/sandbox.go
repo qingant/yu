@@ -339,20 +339,6 @@ var agentAPIRoutes = []agentAPIRoute{
 		BearerPrefix: true,
 	},
 	{
-		KeyEnvs:    []string{"GOOGLE_API_KEY"},
-		BaseEnv:    "GOOGLE_API_BASE_URL",
-		DefaultURL: "https://generativelanguage.googleapis.com",
-		PathPrefix: "/google",
-		HeaderName: "x-goog-api-key",
-	},
-	{
-		KeyEnvs:    []string{"GEMINI_API_KEY"},
-		BaseEnv:    "GEMINI_BASE_URL",
-		DefaultURL: "https://generativelanguage.googleapis.com",
-		PathPrefix: "/gemini",
-		HeaderName: "x-goog-api-key",
-	},
-	{
 		KeyEnvs:      []string{"YU_API_KEY"},
 		BaseEnv:      "YU_BASE_URL",
 		PathPrefix:   "/yu-custom",
@@ -404,6 +390,10 @@ func (s *Sandbox) configureKeyReplacements() {
 			}
 			upstream = route.DefaultURL
 		}
+		// Normalize: strip trailing /v1 to prevent double-path when
+		// proxy appends the full request path (which includes /v1/...)
+		upstream = strings.TrimSuffix(upstream, "/")
+		upstream = strings.TrimSuffix(upstream, "/v1")
 
 		// Build force header: use the first real key found
 		forceHeaders := map[string]string{}

@@ -36,7 +36,13 @@ func (p *AnthropicProvider) Stream(ctx context.Context, system []SystemBlock, me
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := strings.TrimSuffix(p.BaseURL, "/") + "/v1/messages"
+	base := strings.TrimSuffix(p.BaseURL, "/")
+	var url string
+	if strings.HasSuffix(base, "/v1") {
+		url = base + "/messages"
+	} else {
+		url = base + "/v1/messages"
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)

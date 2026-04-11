@@ -33,3 +33,7 @@ func NewProvider(model, apiKey, baseURL string, maxTokens int) Provider {
 func isAnthropicModel(model string) bool {
 	return strings.HasPrefix(model, "claude")
 }
+
+func isGeminiModel(model string) bool {
+	return strings.HasPrefix(model, "gemini")
+}

@@ -766,7 +766,7 @@ func detectAPIConfig(model string) (apiKey, baseURL string) {
 		}
 		return
 	}
-	// OpenAI / GitHub Copilot / other OpenAI-compatible
+	// OpenAI / other OpenAI-compatible
 	apiKey = os.Getenv("OPENAI_API_KEY")
 	baseURL = os.Getenv("OPENAI_BASE_URL")
 	if baseURL == "" {
