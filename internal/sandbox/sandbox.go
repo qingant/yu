@@ -90,13 +90,21 @@ func (s *Sandbox) Run() error {
 	initLog(s.TmpDir)
 	defer closeLog()
 
-	// Handle signals for graceful cleanup
+	// Handle signals for graceful cleanup.
+	// SIGINT is ignored here — the child process (agent-loop) receives the
+	// same SIGINT from the terminal process group and handles it (cancel turn
+	// or exit if idle). When the child exits, cmd.Wait() returns and sandbox
+	// exits normally. Only SIGTERM triggers immediate cleanup.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		s.cleanup()
-		os.Exit(1)
+		for sig := range sigCh {
+			if sig == syscall.SIGTERM {
+				s.cleanup()
+				os.Exit(1)
+			}
+			// SIGINT: do nothing — let the child handle it
+		}
 	}()
 
 	yuLogStderr("Config: %s", config.WorkspaceDir(s.ProjectDir))
