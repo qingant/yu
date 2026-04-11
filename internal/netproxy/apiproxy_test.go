@@ -45,6 +45,7 @@ func TestForceHeaders(t *testing.T) {
 	req, _ := http.NewRequest("POST", "http://"+addr+"/openai/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.fake-jwt")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Yu-Proxy-Secret", ap.Secret)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -61,6 +62,7 @@ func TestForceHeaders(t *testing.T) {
 	req2, _ := http.NewRequest("POST", "http://"+addr+"/anthropic/v1/messages", strings.NewReader("{}"))
 	req2.Header.Set("X-Api-Key", "yu-anthropic-dummy123")
 	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Yu-Proxy-Secret", ap.Secret)
 
 	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {
