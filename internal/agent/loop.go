@@ -447,7 +447,8 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 	for {
 		// Start spinner while waiting for first token
 		spinner := startSpinner("thinking")
-		ch, err := provider.Stream(ctx, system, *messages, tools)
+		sanitized := sanitizeMessages(*messages)
+		ch, err := provider.Stream(ctx, system, sanitized, tools)
 		if err != nil {
 			spinner.Stop()
 			return 0, err
@@ -909,6 +910,60 @@ func autoCompact(lastInputTokens int, session *Session, provider Provider) {
 	}
 	fmt.Printf("\n  %s⟳ Auto-compacting context (%s input)...%s\n", yellow, formatTokens(int64(lastInputTokens)), reset)
 	compactConversation(session, provider)
+}
+
+// sanitizeMessages fixes message pairs before sending to the API.
+// Removes tool_result blocks whose tool_use_id doesn't exist in the
+// preceding assistant message. This can happen after /compact or
+// session corruption.
+func sanitizeMessages(messages []Message) []Message {
+	result := make([]Message, 0, len(messages))
+
+	for i, msg := range messages {
+		if msg.Role == "user" {
+			// Check if this message has tool_result blocks
+			hasToolResult := false
+			for _, b := range msg.Content {
+				if b.Type == "tool_result" {
+					hasToolResult = true
+					break
+				}
+			}
+
+			if hasToolResult && i > 0 {
+				// Collect valid tool_use IDs from the previous assistant message
+				validIDs := make(map[string]bool)
+				prev := messages[i-1]
+				if prev.Role == "assistant" {
+					for _, b := range prev.Content {
+						if b.Type == "tool_use" && b.ID != "" {
+							validIDs[b.ID] = true
+						}
+					}
+				}
+
+				// Filter: keep only tool_results with valid IDs
+				var filtered []ContentBlock
+				for _, b := range msg.Content {
+					if b.Type == "tool_result" {
+						if !validIDs[b.ToolUseID] {
+							continue // orphaned tool_result — skip
+						}
+					}
+					filtered = append(filtered, b)
+				}
+
+				if len(filtered) == 0 {
+					continue // entire message was orphaned tool_results — skip
+				}
+				result = append(result, Message{Role: msg.Role, Content: filtered})
+				continue
+			}
+		}
+		result = append(result, msg)
+	}
+
+	return result
 }
 
 // syncStats updates session stats from the run counters and saves.
