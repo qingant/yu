@@ -207,7 +207,8 @@ Commands:
 
   !<command>         Run shell command directly (output visible to model)
   @<file>            Attach file content to your message (tab to complete)
-  line ending \      Continue input on next line (multi-line)`)
+  line ending \      Continue input on next line
+  ` + "```" + `...` + "```" + `           Multi-line block (start and end with ` + "```" + `)`)
 }
 
 // --- Provider & Model Selection ---

@@ -184,13 +184,21 @@ func Main() {
 	}
 
 	// --- Interactive mode ---
+
+	// Sanitize existing history file (strip ANSI/control chars from past sessions)
+	hFile := historyFile(wsDir)
+	sanitizeHistoryFile(hFile)
+
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:            promptString(model, bgManager.RunningCount()),
-		HistoryFile:       historyFile(wsDir),
-		AutoComplete:      newCompleter(projectDir),
-		InterruptPrompt:   "^C",
-		EOFPrompt:         "exit",
-		HistorySearchFold: true,
+		Prompt:                 promptString(model, bgManager.RunningCount()),
+		HistoryFile:            hFile,
+		HistoryLimit:           1000,
+		DisableAutoSaveHistory: true,
+		AutoComplete:           newCompleter(projectDir),
+		InterruptPrompt:        "^C",
+		EOFPrompt:              "exit",
+		HistorySearchFold:      true,
+		FuncFilterInputRune:    filterInputRune,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "readline init failed: %v\n", err)
@@ -216,6 +224,12 @@ func Main() {
 		if input == "" {
 			continue
 		}
+
+		// Save sanitized input to history (control chars stripped, newlines → spaces
+		// since readline history is line-based)
+		histEntry := stripControlChars(input)
+		histEntry = strings.ReplaceAll(histEntry, "\n", " ")
+		rl.SaveHistory(histEntry)
 
 		// Slash commands
 		if strings.HasPrefix(input, "/") {
@@ -339,7 +353,14 @@ func Main() {
 
 // --- Input ---
 
-// readMultiLine reads input, supporting \ continuation for multi-line.
+// readMultiLine reads input with multi-line support.
+//
+// Multi-line modes:
+//  1. Backslash continuation: line ending with \ continues on next line
+//  2. Triple-backtick block: start a line with ``` to enter multi-line mode,
+//     end with a line that is just ``` to submit
+//
+// In all cases, Ctrl+C cancels the multi-line input.
 func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string, error) {
 	line, err := rl.Readline()
 	if err != nil {
@@ -347,13 +368,42 @@ func readMultiLine(rl *readline.Instance, model string, bgm *BgManager) (string,
 	}
 	line = strings.TrimRight(line, " \t")
 
-	// Multi-line: if line ends with \, continue reading
+	// Triple-backtick block mode: collect until closing ```
+	if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		// The text after ``` on the first line is included
+		first := strings.TrimSpace(line)
+		first = strings.TrimPrefix(first, "```")
+		var lines []string
+		if first != "" {
+			lines = append(lines, first)
+		}
+		for {
+			rl.SetPrompt(fmt.Sprintf("%s...%s ", dim, reset))
+			next, err := rl.Readline()
+			if err != nil {
+				if err == readline.ErrInterrupt {
+					return "", err
+				}
+				break
+			}
+			if strings.TrimSpace(next) == "```" {
+				break
+			}
+			lines = append(lines, next)
+		}
+		return strings.TrimSpace(strings.Join(lines, "\n")), nil
+	}
+
+	// Backslash continuation mode
 	var lines []string
 	for strings.HasSuffix(line, "\\") {
 		lines = append(lines, strings.TrimSuffix(line, "\\"))
 		rl.SetPrompt(fmt.Sprintf("%s...%s ", dim, reset))
 		next, err := rl.Readline()
 		if err != nil {
+			if err == readline.ErrInterrupt {
+				return "", err
+			}
 			break
 		}
 		line = strings.TrimRight(next, " \t")
@@ -1181,6 +1231,86 @@ func historyFile(wsDir string) string {
 	}
 	os.MkdirAll(wsDir, 0700)
 	return filepath.Join(wsDir, "history")
+}
+
+// filterInputRune blocks NUL bytes which can corrupt readline state.
+// All other characters are passed through — readline needs ESC, Ctrl+keys, etc.
+// The real sanitization happens in stripControlChars when saving to history.
+func filterInputRune(r rune) (rune, bool) {
+	if r == 0 {
+		return r, false
+	}
+	return r, true
+}
+
+// stripControlChars removes ANSI escape sequences and control characters from a string.
+// Used to sanitize input before saving to history.
+func stripControlChars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	runes := []rune(s)
+	for i < len(runes) {
+		r := runes[i]
+		// Skip ANSI escape sequences: ESC [ ... final_byte
+		if r == 0x1B && i+1 < len(runes) {
+			i++ // skip ESC
+			if i < len(runes) && runes[i] == '[' {
+				i++ // skip [
+				// Skip parameter bytes (0x30-0x3F), intermediate bytes (0x20-0x2F)
+				for i < len(runes) && runes[i] >= 0x20 && runes[i] <= 0x3F {
+					i++
+				}
+				// Skip intermediate bytes
+				for i < len(runes) && runes[i] >= 0x20 && runes[i] <= 0x2F {
+					i++
+				}
+				// Skip final byte (0x40-0x7E)
+				if i < len(runes) && runes[i] >= 0x40 && runes[i] <= 0x7E {
+					i++
+				}
+			} else {
+				// Other escape sequence (ESC + one char), skip both
+				if i < len(runes) {
+					i++
+				}
+			}
+			continue
+		}
+		// Keep printable chars, newlines, tabs
+		if r == '\n' || r == '\t' || r >= 0x20 {
+			b.WriteRune(r)
+		}
+		i++
+	}
+	return b.String()
+}
+
+// sanitizeHistoryFile reads the history file, strips control characters from each line,
+// and rewrites it. This fixes corrupt history from previous sessions.
+func sanitizeHistoryFile(path string) {
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // file doesn't exist yet, that's fine
+	}
+
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	var clean []string
+	for _, line := range lines {
+		sanitized := stripControlChars(line)
+		if sanitized != line {
+			changed = true
+		}
+		clean = append(clean, sanitized)
+	}
+
+	if changed {
+		os.WriteFile(path, []byte(strings.Join(clean, "\n")), 0600)
+	}
 }
 
 func formatTokens(n int64) string {
