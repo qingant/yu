@@ -425,7 +425,10 @@ func (s *Sandbox) configureKeyReplacements() {
 					return nil
 				}
 				return map[string]string{
-					"Authorization": "Bearer " + jwt,
+					"Authorization":        "Bearer " + jwt,
+					"Editor-Version":       "Yu/1.0",
+					"Editor-Plugin-Version": "yu/1.0",
+					"Copilot-Integration-Id": "vscode-chat",
 				}
 			},
 		})
