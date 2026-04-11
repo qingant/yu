@@ -300,14 +300,45 @@ func replaceInlinePattern(text, delim, open, close string) string {
 
 func displayWidth(s string) int {
 	w := 0
-	for _, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
+		if isZeroWidth(r) {
+			continue
+		}
 		if isWideRune(r) {
+			w += 2
+		} else if isEmojiPresentation(r, runes, i) {
 			w += 2
 		} else {
 			w++
 		}
 	}
 	return w
+}
+
+// isZeroWidth returns true for characters that don't occupy terminal columns.
+func isZeroWidth(r rune) bool {
+	return r == 0xFE0F || // variation selector-16 (emoji presentation)
+		r == 0xFE0E || // variation selector-15 (text presentation)
+		(r >= 0x200B && r <= 0x200F) || // zero-width space, joiners, marks
+		r == 0x2060 || // word joiner
+		r == 0xFEFF || // BOM / zero-width no-break space
+		(r >= 0x0300 && r <= 0x036F) || // combining diacritical marks
+		(r >= 0x1AB0 && r <= 0x1AFF) || // combining marks extended
+		(r >= 0x20D0 && r <= 0x20FF) // combining marks for symbols
+}
+
+// isEmojiPresentation returns true for emoji that render as wide (2-col) in terminals.
+// Checks if followed by variation selector FE0F, or is in a range that defaults to emoji presentation.
+func isEmojiPresentation(r rune, runes []rune, idx int) bool {
+	// If followed by FE0F, it's emoji presentation → wide
+	if idx+1 < len(runes) && runes[idx+1] == 0xFE0F {
+		return true
+	}
+	// Emoji that default to wide presentation
+	return (r >= 0x1F300 && r <= 0x1F9FF) || // Misc Symbols & Pictographs, Emoticons, etc.
+		(r >= 0x2600 && r <= 0x27BF) || // Misc Symbols, Dingbats
+		(r >= 0x1FA00 && r <= 0x1FAFF) // Symbols & Pictographs Extended-A
 }
 
 // isWideRune returns true for CJK and other East Asian wide characters
@@ -337,13 +368,19 @@ func truncateToWidth(s string, maxWidth int) string {
 		return "…"
 	}
 	w := 0
-	for i, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
+		if isZeroWidth(r) {
+			continue
+		}
 		rw := 1
 		if isWideRune(r) {
 			rw = 2
+		} else if isEmojiPresentation(r, runes, i) {
+			rw = 2
 		}
 		if w+rw > maxWidth-1 {
-			return s[:i] + "…"
+			return string(runes[:i]) + "…"
 		}
 		w += rw
 	}
