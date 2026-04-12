@@ -19,10 +19,11 @@ var globalProgram *tea.Program
 // --- Messages ---
 
 type (
-	outputMsg   string    // chunk from stdout pipe
-	tickMsg     time.Time // 1-second tick for status bar
-	initMsg     struct{}  // print session history after TUI starts
-	turnDoneMsg struct {
+	outputMsg      string    // chunk from stdout pipe
+	tickMsg        time.Time // 1-second tick for status bar
+	initMsg        struct{}  // print session history after TUI starts
+	slashSelectMsg struct{ cmd string } // user picked from slash menu
+	turnDoneMsg    struct {
 		lastInput   int
 		elapsed     time.Duration
 		err         error
@@ -39,6 +40,7 @@ const (
 	stateIdle     appState = iota
 	stateWorking           // agent turn or slash command running
 	stateInteract          // waiting for user input (ask_user / select)
+	stateHelp              // showing help overlay
 )
 
 // --- Model ---
@@ -87,7 +89,7 @@ func newUIModel(
 	ta.Placeholder = "Message... (Enter send, Ctrl+J newline, /help)"
 	ta.Focus()
 	ta.CharLimit = 0
-	ta.SetHeight(1)
+	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+j")
 
@@ -215,6 +217,14 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// No longer used — relay prints directly via program.Println()
 		return m, nil
 
+	case slashSelectMsg:
+		m.state = stateIdle
+		m.interactReq = nil
+		if msg.cmd != "" {
+			return m.submit(msg.cmd)
+		}
+		return m, nil
+
 	case initMsg:
 		// Print session history through pipe (goes to relay → program.Println)
 		if len(m.session.Messages) > 0 {
@@ -262,12 +272,11 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case stateIdle:
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
-		// Auto-grow
-		lines := strings.Count(m.textarea.Value(), "\n") + 1
-		h := lines
-		if h < 1 { h = 1 }
-		if h > 12 { h = 12 }
-		m.textarea.SetHeight(h)
+		// Auto-grow: minimum 2, +1 per extra newline
+		lines := strings.Count(m.textarea.Value(), "\n") + 2
+		if lines < 2 { lines = 2 }
+		if lines > 12 { lines = 12 }
+		m.textarea.SetHeight(lines)
 		return m, cmd
 	case stateInteract:
 		if m.interactReq != nil && m.interactReq.Options == nil {
@@ -281,6 +290,12 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// --- Help overlay ---
+	if m.state == stateHelp {
+		m.state = stateIdle
+		return m, nil
+	}
+
 	// --- Interact state ---
 	if m.state == stateInteract && m.interactReq != nil {
 		return m.handleInteractKey(msg)
@@ -318,7 +333,10 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.completeSlashCmd()
 
 	case tea.KeyCtrlL:
-		m.output.Reset()
+		// Clear scrollback above the TUI
+		if globalProgram != nil {
+			globalProgram.Println("\033[2J\033[H")
+		}
 		return m, nil
 
 	case tea.KeyCtrlG:
@@ -330,8 +348,18 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.textarea.Reset()
-		m.textarea.SetHeight(1)
+		m.textarea.SetHeight(2)
 		return m.submit(text)
+
+	case tea.KeyRunes:
+		// "/" on empty input → show slash command menu
+		if len(msg.Runes) == 1 && msg.Runes[0] == '/' && m.textarea.Value() == "" {
+			return m.showSlashMenu()
+		}
+		// "?" on empty input → show help overlay
+		if len(msg.Runes) == 1 && msg.Runes[0] == '?' && m.textarea.Value() == "" {
+			return m.showHelp()
+		}
 	}
 
 	var cmd tea.Cmd
@@ -398,7 +426,7 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 	// Print user message through pipe → relay → program.Println (preserved in scroll history)
 	ts := time.Now().Format("15:04:05")
-	go fmt.Printf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input)
+	fmt.Printf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input)
 
 	if input == "/clock" {
 		toggleClock()
@@ -441,7 +469,10 @@ func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 	m.turnStart = time.Now()
 	turnCtx, turnCancel := context.WithCancel(m.ctx)
 	m.turnCancel = turnCancel
-	go m.runAgentTurn(turnCtx, turnCancel)
+	go func() {
+		fmt.Printf("%s⟳ thinking...%s\n", dim, reset)
+		m.runAgentTurn(turnCtx, turnCancel)
+	}()
 
 	return *m, nil
 }
@@ -519,6 +550,34 @@ func (m *uiModel) runShellCommand(shellCmd string) {
 		m.session.Save(m.wsDir)
 	}
 	globalProgram.Send(turnDoneMsg{})
+}
+
+func (m *uiModel) showHelp() (tea.Model, tea.Cmd) {
+	m.state = stateHelp
+	return *m, nil
+}
+
+func (m *uiModel) showSlashMenu() (tea.Model, tea.Cmd) {
+	m.state = stateInteract
+	resp := make(chan string, 1)
+	m.interactReq = &interactRequest{
+		Question: "Commands:",
+		Options:  slashCommands,
+		Response: resp,
+	}
+	m.interactCursor = 0
+	// When user selects, submit the command
+	go func() {
+		selected := <-resp
+		if selected != "" {
+			// Trim trailing space from command name
+			selected = strings.TrimSpace(selected)
+			globalProgram.Send(slashSelectMsg{cmd: selected})
+		} else {
+			globalProgram.Send(slashSelectMsg{cmd: ""})
+		}
+	}()
+	return *m, nil
 }
 
 func (m uiModel) completeSlashCmd() (tea.Model, tea.Cmd) {
@@ -602,6 +661,8 @@ func (m uiModel) View() string {
 		status = fmt.Sprintf(" %s%s working %s%s %s(ESC)%s ", yellow, m.spinner.View(), formatDuration(elapsed), reset, dim, reset)
 	} else if m.state == stateInteract {
 		status = fmt.Sprintf(" %s? waiting%s ", cyan, reset)
+	} else if m.state == stateHelp {
+		status = fmt.Sprintf(" %s? help%s ", cyan, reset)
 	}
 	statusLen := visibleLen(status)
 	lineLen := barWidth - statusLen
@@ -618,6 +679,31 @@ func (m uiModel) View() string {
 		b.WriteByte('\n')
 		b.WriteString(m.textarea.View())
 		b.WriteByte('\n')
+
+	case stateHelp:
+		helpLines := []string{
+			"",
+			fmt.Sprintf("  %sCommands%s", bold, reset),
+			fmt.Sprintf("  %s/help              %sShow help%s", dim, reset, reset),
+			fmt.Sprintf("  %s/model             %sSwitch model%s", dim, reset, reset),
+			fmt.Sprintf("  %s/sessions          %sList sessions%s", dim, reset, reset),
+			fmt.Sprintf("  %s/resume            %sResume a session%s", dim, reset, reset),
+			fmt.Sprintf("  %s/new               %sNew session%s", dim, reset, reset),
+			fmt.Sprintf("  %s/compact           %sCompress context%s", dim, reset, reset),
+			fmt.Sprintf("  %s/stats             %sToken usage%s", dim, reset, reset),
+			fmt.Sprintf("  %s/remember <text>   %sSave to memory%s", dim, reset, reset),
+			fmt.Sprintf("  %s/rollback          %sRestore snapshot%s", dim, reset, reset),
+			"",
+			fmt.Sprintf("  %sKeys%s", bold, reset),
+			fmt.Sprintf("  %sEnter%s send  %sCtrl+J%s newline  %sCtrl+G%s editor  %sCtrl+L%s clear  %sESC%s cancel", dim, reset, dim, reset, dim, reset, dim, reset, dim, reset),
+			fmt.Sprintf("  %s/%s commands  %s?%s help  %s!cmd%s shell  %s@file%s attach", dim, reset, dim, reset, dim, reset, dim, reset),
+			"",
+			fmt.Sprintf("  %s(press any key to close)%s", dim, reset),
+			"",
+		}
+		for _, line := range helpLines {
+			b.WriteString(line + "\n")
+		}
 
 	case stateInteract:
 		if m.interactReq != nil {
