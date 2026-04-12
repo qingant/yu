@@ -19,8 +19,9 @@ var globalProgram *tea.Program
 // --- Messages ---
 
 type (
-	outputMsg   string    // line from stdout pipe
+	outputMsg   string    // chunk from stdout pipe
 	tickMsg     time.Time // 1-second tick for status bar
+	initMsg     struct{}  // print session history after TUI starts
 	turnDoneMsg struct {
 		lastInput   int
 		elapsed     time.Duration
@@ -46,10 +47,11 @@ type uiModel struct {
 	textarea textarea.Model
 	spinner  spinner.Model
 	state    appState
-	output   *strings.Builder // accumulated output (pointer to survive value copies)
-	width    int
-	height   int
-	now      time.Time
+	output    *strings.Builder // accumulated output (pointer to survive value copies)
+	width     int
+	height    int
+	now       time.Time
+	turnStart time.Time // when current turn started
 
 	// Interaction state
 	interactReq     *interactRequest
@@ -85,7 +87,7 @@ func newUIModel(
 	ta.Placeholder = "Message... (Enter send, Ctrl+J newline, /help)"
 	ta.Focus()
 	ta.CharLimit = 0
-	ta.SetHeight(2)
+	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+j")
 
@@ -169,44 +171,14 @@ func writeWelcome(buf *strings.Builder, model, projectDir string, session *Sessi
 	}
 	buf.WriteString(fmt.Sprintf("  %s╰%s╯%s\n", dim, strings.Repeat("─", maxW), reset))
 
-	if len(session.Messages) > 0 {
-		buf.WriteString("\n")
-		writeSessionHistory(buf, session.Messages)
-	} else {
+	if len(session.Messages) == 0 {
 		buf.WriteString(fmt.Sprintf("\n  %sType /help • Ctrl+J newline • Ctrl+G editor • Ctrl+L clear%s\n", dim, reset))
 	}
 	buf.WriteString("\n")
 }
 
-func writeSessionHistory(buf *strings.Builder, messages []Message) {
-	for _, msg := range messages {
-		if msg.Role == "user" {
-			for _, b := range msg.Content {
-				if b.Type == "text" {
-					text := b.Text
-					if len(text) > 120 {
-						text = text[:120] + "..."
-					}
-					buf.WriteString(fmt.Sprintf("  %syu>%s %s\n", boldGreen, reset, text))
-				}
-			}
-		} else if msg.Role == "assistant" {
-			for _, b := range msg.Content {
-				if b.Type == "text" {
-					text := b.Text
-					if len(text) > 120 {
-						text = text[:120] + "..."
-					}
-					buf.WriteString(fmt.Sprintf("  %s%s%s\n", dim, text, reset))
-				}
-			}
-		}
-	}
-	buf.WriteString(fmt.Sprintf("\n%s─── end of history ──-%s\n", dim, reset))
-}
-
 func (m uiModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick, tickEvery())
+	return tea.Batch(textarea.Blink, m.spinner.Tick, tickEvery(), func() tea.Msg { return initMsg{} })
 }
 
 func tickEvery() tea.Cmd {
@@ -234,15 +206,22 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickEvery()
 
 	case spinner.TickMsg:
-		if m.state == stateWorking {
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
-		}
-		return m, nil
+		// Always update spinner to keep tick chain alive
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case outputMsg:
-		m.output.WriteString(string(msg))
+		// No longer used — relay prints directly via program.Println()
+		return m, nil
+
+	case initMsg:
+		// Print session history through pipe (goes to relay → program.Println)
+		if len(m.session.Messages) > 0 {
+			go func() {
+				printSessionHistory(m.session.Messages)
+			}()
+		}
 		return m, nil
 
 	case interactMsg:
@@ -285,8 +264,8 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		// Auto-grow
 		lines := strings.Count(m.textarea.Value(), "\n") + 1
-		h := lines + 1
-		if h < 2 { h = 2 }
+		h := lines
+		if h < 1 { h = 1 }
 		if h > 12 { h = 12 }
 		m.textarea.SetHeight(h)
 		return m, cmd
@@ -351,7 +330,7 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.textarea.Reset()
-		m.textarea.SetHeight(2)
+		m.textarea.SetHeight(1)
 		return m.submit(text)
 	}
 
@@ -417,8 +396,9 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
+	// Print user message through pipe → relay → program.Println (preserved in scroll history)
 	ts := time.Now().Format("15:04:05")
-	m.output.WriteString(fmt.Sprintf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input))
+	go fmt.Printf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input)
 
 	if input == "/clock" {
 		toggleClock()
@@ -458,6 +438,7 @@ func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 	})
 
 	m.state = stateWorking
+	m.turnStart = time.Now()
 	turnCtx, turnCancel := context.WithCancel(m.ctx)
 	m.turnCancel = turnCancel
 	go m.runAgentTurn(turnCtx, turnCancel)
@@ -507,10 +488,7 @@ func (m *uiModel) runSlashCommand(input string) {
 			}
 			turns := countUserTurns(m.session.Messages)
 			fmt.Printf("Resumed: %s (%d turns)\n\n", m.session.Title, turns)
-			// Print history through pipe
-			var hist strings.Builder
-			writeSessionHistory(&hist, m.session.Messages)
-			fmt.Print(hist.String())
+			printSessionHistory(m.session.Messages)
 		}
 	}
 	if result.switchModel != "" {
@@ -610,45 +588,41 @@ func (m uiModel) View() string {
 
 	var b strings.Builder
 
-	// Output area — in non-alt-screen mode, bubbletea redraws from
-	// its starting position. We just render the last portion of output
-	// to keep the view manageable.
-	outputStr := m.output.String()
-	if outputStr != "" {
-		b.WriteString(outputStr)
-		if !strings.HasSuffix(outputStr, "\n") {
-			b.WriteByte('\n')
-		}
-	}
+	// Two-line margin
 	b.WriteString("\n\n")
+
+	// Separator line with status
+	barWidth := m.width
+	if barWidth < 40 {
+		barWidth = 80
+	}
+	status := fmt.Sprintf(" %s● idle%s ", green, reset)
+	if m.state == stateWorking {
+		elapsed := time.Since(m.turnStart)
+		status = fmt.Sprintf(" %s%s working %s%s %s(ESC)%s ", yellow, m.spinner.View(), formatDuration(elapsed), reset, dim, reset)
+	} else if m.state == stateInteract {
+		status = fmt.Sprintf(" %s? waiting%s ", cyan, reset)
+	}
+	statusLen := visibleLen(status)
+	lineLen := barWidth - statusLen
+	if lineLen < 4 {
+		lineLen = 4
+	}
+	leftLine := lineLen / 2
+	rightLine := lineLen - leftLine
+	b.WriteString(fmt.Sprintf("%s%s%s%s%s%s%s\n", dim, strings.Repeat("─", leftLine), reset, status, dim, strings.Repeat("─", rightLine), reset))
 
 	// --- Input area ---
 	switch m.state {
-	case stateIdle:
-		bg := ""
-		if m.bgManager.RunningCount() > 0 {
-			bg = fmt.Sprintf(" %s[%d bg]%s", yellow, m.bgManager.RunningCount(), reset)
-		}
-		prompt := fmt.Sprintf("%syu%s %s%s%s%s❯ ", boldGreen, reset, dim, shortModel(m.modelName), reset, bg)
-		b.WriteString(prompt + "\n")
-		b.WriteString(m.textarea.View())
+	case stateIdle, stateWorking:
 		b.WriteByte('\n')
-
-	case stateWorking:
-		bg := ""
-		if m.bgManager.RunningCount() > 0 {
-			bg = fmt.Sprintf(" %s[%d bg]%s", yellow, m.bgManager.RunningCount(), reset)
-		}
-		prompt := fmt.Sprintf("%syu%s %s%s%s%s❯ ", boldGreen, reset, dim, shortModel(m.modelName), reset, bg)
-		b.WriteString(fmt.Sprintf("%s  %s %sworking...%s  %s(ESC to cancel)%s\n",
-			prompt, m.spinner.View(), bold, reset, dim, reset))
 		b.WriteString(m.textarea.View())
 		b.WriteByte('\n')
 
 	case stateInteract:
 		if m.interactReq != nil {
 			if m.interactReq.Question != "" {
-				b.WriteString(fmt.Sprintf("  %s%s%s\n", bold, m.interactReq.Question, reset))
+				b.WriteString(fmt.Sprintf("\n  %s%s%s\n", bold, m.interactReq.Question, reset))
 			}
 			if m.interactReq.Options != nil {
 				for i, opt := range m.interactReq.Options {
@@ -665,37 +639,57 @@ func (m uiModel) View() string {
 		}
 	}
 
-	// Status bar
-	status := fmt.Sprintf("%s● idle%s", green, reset)
-	if m.state == stateWorking {
-		status = fmt.Sprintf("%s◉ working%s", yellow, reset)
-	} else if m.state == stateInteract {
-		status = fmt.Sprintf("%s? waiting%s", cyan, reset)
-	}
-
+	// Status bar (bottom)
+	b.WriteByte('\n')
 	providerName := "Anthropic"
 	if activeProvider != nil {
 		providerName = activeProvider.Name
 	}
 	sessionDur := formatSessionDuration(m.session)
-	b.WriteString(renderStatusBar(w, m.projectDir, providerName, m.modelName, status, sessionDur))
+	b.WriteString(renderStatusBar(barWidth, m.projectDir, providerName, m.modelName, "", sessionDur))
 
 	return b.String()
 }
 
 // --- stdout pipe relay ---
-
-// outputMsg now carries raw text chunks (not just lines).
-// View splits by \n for display.
+//
+// Reads from the pipe in a goroutine. Complete lines are printed above the
+// TUI via program.Println() (safe from goroutines, NOT from Update handlers).
+// Partial lines are buffered until a newline arrives.
 
 func startOutputRelay(pr *os.File, p *tea.Program) {
+	var lineBuf strings.Builder
 	buf := make([]byte, 4096)
 	for {
 		n, err := pr.Read(buf)
 		if n > 0 {
-			p.Send(outputMsg(string(buf[:n])))
+			chunk := string(buf[:n])
+			// Filter control chars that break bubbletea
+			chunk = strings.ReplaceAll(chunk, "\r", "")
+			chunk = strings.ReplaceAll(chunk, "\033[K", "")
+			chunk = strings.ReplaceAll(chunk, "\033[2K", "")
+
+			lineBuf.WriteString(chunk)
+			content := lineBuf.String()
+
+			// Print all complete lines
+			lastNL := strings.LastIndex(content, "\n")
+			if lastNL >= 0 {
+				lines := strings.Split(content[:lastNL], "\n")
+				for _, line := range lines {
+					p.Println(line)
+				}
+				lineBuf.Reset()
+				if lastNL+1 < len(content) {
+					lineBuf.WriteString(content[lastNL+1:])
+				}
+			}
 		}
 		if err != nil {
+			// Flush remaining
+			if lineBuf.Len() > 0 {
+				p.Println(lineBuf.String())
+			}
 			return
 		}
 	}
@@ -711,7 +705,13 @@ func RunInteractive(
 	m := newUIModel(session, provider, system, tools, executor, bgManager,
 		st, projectDir, wsDir, modelName, maxTokens)
 
-	// Hijack stdout → pipe → outputMsg
+	// Print welcome to real stdout before hijacking (stays in scroll history)
+	if m.output.Len() > 0 {
+		fmt.Print(m.output.String())
+		m.output.Reset()
+	}
+
+	// Hijack stdout → pipe → program.Println (in relay goroutine)
 	origStdout := os.Stdout
 	pr, pw, err := os.Pipe()
 	if err != nil {

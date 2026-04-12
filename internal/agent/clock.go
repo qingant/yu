@@ -261,8 +261,15 @@ func formatSessionDuration(session *Session) string {
 
 // renderStatusBar renders the bottom status bar.
 func renderStatusBar(width int, projectDir, providerName, modelName, status, sessionDur string) string {
-	left := fmt.Sprintf(" %s │ %s │ %s:%s │ %s",
-		shortenPath(projectDir), status, providerName, shortModel(modelName), sessionDur)
+	parts := []string{shortenPath(projectDir)}
+	if status != "" {
+		parts = append(parts, status)
+	}
+	parts = append(parts, providerName+":"+shortModel(modelName))
+	if sessionDur != "" {
+		parts = append(parts, sessionDur)
+	}
+	left := fmt.Sprintf(" %s", strings.Join(parts, " │ "))
 
 	quote := "live each day as if it's the last"
 	right := fmt.Sprintf("%s ", quote)
