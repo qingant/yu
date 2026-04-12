@@ -166,11 +166,9 @@ func Main() {
 
 	// --- Interactive mode ---
 
-	if err := RunUI(session, provider, system, tools, executor, bgManager, &st,
-		projectDir, wsDir, model, maxTokens); err != nil {
-		fmt.Fprintf(os.Stderr, "UI error: %v\n", err)
-		os.Exit(1)
-	}
+	printWelcome(model, projectDir, session)
+	RunInteractive(session, provider, system, tools, executor, bgManager, &st,
+		projectDir, wsDir, model, maxTokens)
 	bgManager.StopAll()
 }
 

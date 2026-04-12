@@ -8,130 +8,74 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 )
 
-// program is the global Bubble Tea program reference.
-// Used by agentTurn to print output above the TUI input area.
-var program *tea.Program
+// --- Input Collection via Bubble Tea ---
+//
+// Strategy: bubbletea is used ONLY for collecting user input. Each time we need
+// input, we create a short-lived tea.Program, collect the text, and exit.
+// Agent turns run with direct stdout access — no pipe, no conflicts.
+//
+// This avoids the deadlock problem of running agentTurn inside a tea.Cmd
+// (agentTurn writes stdout via fmt.Printf, which requires bubbletea's message
+// loop to consume, but bubbletea is waiting for the Cmd to finish).
 
-// uiPrint prints a line above the TUI input area (or to stdout if no TUI).
-func uiPrint(s string) {
-	if program != nil {
-		program.Println(s)
-	} else {
-		fmt.Println(s)
-	}
+// inputResult is returned by collectInput.
+type inputResult struct {
+	text   string
+	editor bool // true if user pressed Ctrl+G (open editor)
+	quit   bool // true if user pressed Ctrl+C
 }
-
-// uiPrintf prints formatted text above the TUI input area.
-func uiPrintf(format string, a ...any) {
-	s := fmt.Sprintf(format, a...)
-	// Strip trailing newline — program.Println adds one
-	if len(s) > 0 && s[len(s)-1] == '\n' {
-		s = s[:len(s)-1]
-	}
-	if program != nil {
-		program.Println(s)
-	} else {
-		fmt.Println(s)
-	}
-}
-
-// --- Tea Messages ---
 
 type (
-	turnDoneMsg struct {
-		lastInput int
-		elapsed   time.Duration
-	}
-	turnErrorMsg struct {
-		err         error
-		interrupted bool
-	}
-	editorResultMsg struct{ text string }
-	editorErrorMsg  struct{ err error }
-	submitMsg       struct{ text string }
+	editorDoneMsg  struct{ text string }
+	editorErrorMsg struct{ err error }
 )
 
-// --- App State ---
-
-type uiState int
-
-const (
-	uiIdle uiState = iota
-	uiThinking
-)
-
-// --- Model ---
-
-type uiModel struct {
-	textarea textarea.Model
-	spinner  spinner.Model
-	state    uiState
-	width    int
-
-	// Turn cancellation
-	turnCancel context.CancelFunc
-
-	// Business context
-	session    *Session
-	provider   Provider
-	system     []SystemBlock
-	tools      []ToolDef
-	executor   *ToolExecutor
-	bgManager  *BgManager
-	st         *stats
-	projectDir string
-	wsDir      string
-	model      string
-	maxTokens  int
-	ctx        context.Context
-}
-
-func newUIModel(
-	session *Session, provider Provider, system []SystemBlock,
-	tools []ToolDef, executor *ToolExecutor, bgManager *BgManager,
-	st *stats, projectDir, wsDir, modelName string, maxTokens int,
-	ctx context.Context,
-) uiModel {
+// collectInput runs a short-lived bubbletea program to get user input.
+// Returns the input text, or signals for editor/quit.
+func collectInput(modelName string, bgCount int) inputResult {
 	ta := textarea.New()
-	ta.Placeholder = "Message... (Enter send, Shift+Enter newline, /help commands)"
+	ta.Placeholder = "Message... (Enter send, Shift+Enter newline, /help)"
 	ta.Focus()
 	ta.CharLimit = 0
 	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter", "ctrl+j")
 
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-
-	return uiModel{
-		textarea:   ta,
-		spinner:    sp,
-		state:      uiIdle,
-		session:    session,
-		provider:   provider,
-		system:     system,
-		tools:      tools,
-		executor:   executor,
-		bgManager:  bgManager,
-		st:         st,
-		projectDir: projectDir,
-		wsDir:      wsDir,
-		model:      modelName,
-		maxTokens:  maxTokens,
-		ctx:        ctx,
+	m := inputModel{
+		textarea:  ta,
+		modelName: modelName,
+		bgCount:   bgCount,
 	}
+
+	p := tea.NewProgram(m)
+	finalModel, err := p.Run()
+	if err != nil {
+		return inputResult{quit: true}
+	}
+
+	fm := finalModel.(inputModel)
+	return fm.result
 }
 
-func (m uiModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick)
+// inputModel is the bubbletea model for input collection only.
+type inputModel struct {
+	textarea  textarea.Model
+	modelName string
+	bgCount   int
+	result    inputResult
+	width     int
 }
 
-func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m inputModel) Init() tea.Cmd {
+	return textarea.Blink
+}
+
+func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -139,341 +83,249 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			m.result = inputResult{quit: true}
+			return m, tea.Quit
 
-	case spinner.TickMsg:
-		if m.state != uiIdle {
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
-		}
-		return m, nil
+		case tea.KeyEsc:
+			// ESC while typing = cancel input (clear textarea)
+			m.textarea.Reset()
+			return m, nil
 
-	case submitMsg:
-		return m.handleSubmit(msg.text)
+		case tea.KeyCtrlG:
+			m.result = inputResult{editor: true, text: m.textarea.Value()}
+			return m, tea.Quit
 
-	case turnDoneMsg:
-		m.state = uiIdle
-		m.turnCancel = nil
-
-		// Stats line
-		uiPrintf("\n  %s  %s  %s\n",
-			randomEmoji(),
-			formatTokens(int64(msg.lastInput)),
-			formatDuration(msg.elapsed))
-
-		m.st.turns.Add(1)
-		syncStats(m.st, m.session, m.wsDir)
-		autoCompact(msg.lastInput, m.session, m.provider)
-		return m, nil
-
-	case turnErrorMsg:
-		m.state = uiIdle
-		m.turnCancel = nil
-		if msg.interrupted {
-			uiPrintf("\n%s↩ Interrupted%s\n", yellow, reset)
-			if len(m.session.Messages) > 0 && m.session.Messages[len(m.session.Messages)-1].Role == "user" {
-				m.session.Messages = m.session.Messages[:len(m.session.Messages)-1]
+		case tea.KeyEnter:
+			text := strings.TrimSpace(m.textarea.Value())
+			if text == "" {
+				return m, nil
 			}
-		} else {
-			uiPrintf("\n%sError: %v%s\n", boldRed, msg.err, reset)
+			m.result = inputResult{text: text}
+			return m, tea.Quit
 		}
-		return m, nil
 
-	case editorResultMsg:
+	case editorDoneMsg:
 		if msg.text != "" {
-			m.textarea.SetValue(msg.text)
+			m.result = inputResult{text: msg.text}
+			return m, tea.Quit
 		}
 		return m, nil
 
 	case editorErrorMsg:
-		uiPrintf("%sEditor error: %v%s", red, msg.err, reset)
+		fmt.Fprintf(os.Stderr, "Editor error: %v\n", msg.err)
 		return m, nil
 	}
 
-	// Pass remaining messages to textarea
-	if m.state == uiIdle {
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
-	}
-	return m, nil
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	return m, cmd
 }
 
-func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		if m.state != uiIdle {
-			if m.turnCancel != nil {
-				m.turnCancel()
-			}
-			return m, nil
-		}
-		m.bgManager.StopAll()
-		return m, tea.Quit
-
-	case tea.KeyEsc:
-		if m.state != uiIdle {
-			if m.turnCancel != nil {
-				m.turnCancel()
-			}
-			return m, nil
-		}
-		return m, nil
-
-	case tea.KeyCtrlG:
-		if m.state == uiIdle {
-			return m, m.openEditor()
-		}
-		return m, nil
-
-	case tea.KeyEnter:
-		if m.state != uiIdle {
-			return m, nil
-		}
-		input := strings.TrimSpace(m.textarea.Value())
-		if input == "" {
-			return m, nil
-		}
-		m.textarea.Reset()
-		// Process via a Cmd so the View updates first (shows cleared textarea)
-		return m, func() tea.Msg { return submitMsg{text: input} }
-	}
-
-	if m.state == uiIdle {
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
-	}
-	return m, nil
-}
-
-func (m uiModel) handleSubmit(input string) (tea.Model, tea.Cmd) {
-	// Slash commands
-	if strings.HasPrefix(input, "/") {
-		result := handleSlashCommand(input, m.session, m.projectDir, m.wsDir, m.provider, m.bgManager, m.st)
-		if result.newSession {
-			m.session = NewSession(m.model)
-			m.system = buildSystemPrompt(m.projectDir, findMemoryFile(m.wsDir))
-			uiPrint("New session started.")
-		}
-		if result.resumeID != "" {
-			loaded, err := LoadSession(m.wsDir, result.resumeID)
-			if err != nil {
-				uiPrintf("Error loading session: %v", err)
-			} else {
-				m.session = loaded
-				if m.session.Model != "" && m.session.Model != m.model {
-					m.model = m.session.Model
-					newKey, newBase := detectAPIConfig(m.model)
-					if newKey != "" {
-						m.provider = NewProvider(m.model, newKey, newBase, m.maxTokens)
-					}
-				}
-				turns := countUserTurns(m.session.Messages)
-				uiPrintf("Resumed: %s (%d turns)", m.session.Title, turns)
-				printSessionHistory(m.session.Messages)
-			}
-		}
-		if result.switchModel != "" {
-			m.model = result.switchModel
-			m.session.Model = m.model
-			if p, ok := switchFromActiveProvider(m.model); ok {
-				m.provider = p
-			} else {
-				newKey, newBase := detectAPIConfig(m.model)
-				if newKey == "" {
-					uiPrintf("No API key found for model %s", m.model)
-				} else {
-					m.provider = NewProvider(m.model, newKey, newBase, m.maxTokens)
-				}
-			}
-			saveActiveModel(m.wsDir, m.model)
-			uiPrintf("Switched to %s%s%s", bold, m.model, reset)
-		}
-		return m, nil
-	}
-
-	// !cmd — direct shell execution
-	if strings.HasPrefix(input, "!") {
-		shellCmd := strings.TrimPrefix(input, "!")
-		shellCmd = strings.TrimSpace(shellCmd)
-		if shellCmd != "" {
-			output := execDirectCommand(shellCmd, m.projectDir)
-			m.session.Messages = append(m.session.Messages, Message{
-				Role: "user",
-				Content: []ContentBlock{
-					{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, stripControlChars(output))},
-				},
-			})
-			if m.wsDir != "" {
-				m.session.Save(m.wsDir)
-			}
-		}
-		return m, nil
-	}
-
-	// User message
-	_, expanded := expandAtFiles(input, m.projectDir)
-	m.session.Messages = append(m.session.Messages, Message{
-		Role: "user",
-		Content: []ContentBlock{
-			{Type: "text", Text: expanded},
-		},
-	})
-
-	// Start agent turn
-	m.state = uiThinking
-	turnCtx, turnCancel := context.WithCancel(m.ctx)
-	m.turnCancel = turnCancel
-
-	return m, func() tea.Msg {
-		turnStart := time.Now()
-		lastInput, err := agentTurn(turnCtx, m.provider, m.system, &m.session.Messages, m.tools, m.executor, m.st)
-		elapsed := time.Since(turnStart)
-		if err != nil {
-			return turnErrorMsg{err: err, interrupted: turnCtx.Err() != nil}
-		}
-		return turnDoneMsg{lastInput: lastInput, elapsed: elapsed}
-	}
-}
-
-func (m uiModel) openEditor() tea.Cmd {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
-	tmp, err := os.CreateTemp("", "yu-input-*.md")
-	if err != nil {
-		return func() tea.Msg { return editorErrorMsg{err: err} }
-	}
-	current := m.textarea.Value()
-	if current != "" {
-		tmp.WriteString(current + "\n")
-	}
-	tmp.Close()
-
-	c := exec.Command(editor, tmp.Name())
-	return tea.ExecProcess(c, func(err error) tea.Msg {
-		defer os.Remove(tmp.Name())
-		if err != nil {
-			return editorErrorMsg{err: err}
-		}
-		data, err := os.ReadFile(tmp.Name())
-		if err != nil {
-			return editorErrorMsg{err: err}
-		}
-		return editorResultMsg{text: strings.TrimSpace(string(data))}
-	})
-}
-
-// --- View ---
-
-func (m uiModel) View() string {
+func (m inputModel) View() string {
 	var b strings.Builder
 
-	if m.state == uiIdle {
-		// Prompt label
-		prompt := fmt.Sprintf(" %s%s%s ", boldCyan, shortModel(m.model), reset)
-		bgCount := m.bgManager.RunningCount()
-		if bgCount > 0 {
-			prompt += fmt.Sprintf("%s[%d bg]%s ", dim, bgCount, reset)
-		}
-		b.WriteString(prompt)
-		b.WriteString("\n")
-		b.WriteString(m.textarea.View())
-	} else {
-		label := "thinking"
-		if m.state == uiThinking {
-			label = "thinking"
-		}
-		b.WriteString(fmt.Sprintf(" %s %s...", m.spinner.View(), label))
-		b.WriteString(fmt.Sprintf("  %s(ESC to cancel)%s", dim, reset))
+	// Prompt label
+	prompt := fmt.Sprintf(" %s%s%s ", boldCyan, shortModel(m.modelName), reset)
+	if m.bgCount > 0 {
+		prompt += fmt.Sprintf("%s[%d bg]%s ", dim, m.bgCount, reset)
 	}
+	b.WriteString(prompt + "\n")
+	b.WriteString(m.textarea.View())
 
 	return b.String()
 }
 
-// --- Entry Point ---
+// openEditorForInput opens $EDITOR with prefilled text, returns the result.
+func openEditorForInput(prefill string) (string, error) {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim"
+	}
 
-// RunUI starts the Bubble Tea UI for interactive mode.
-func RunUI(
+	tmp, err := os.CreateTemp("", "yu-input-*.md")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if prefill != "" {
+		tmp.WriteString(prefill + "\n")
+	}
+	tmp.Close()
+
+	cmd := exec.Command(editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// RunInteractive is the main interactive loop using Bubble Tea for input.
+func RunInteractive(
 	session *Session, provider Provider, system []SystemBlock,
 	tools []ToolDef, executor *ToolExecutor, bgManager *BgManager,
 	st *stats, projectDir, wsDir, modelName string, maxTokens int,
-) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+) {
+	ctx := context.Background()
 
-	m := newUIModel(session, provider, system, tools, executor, bgManager,
-		st, projectDir, wsDir, modelName, maxTokens, ctx)
+	for {
+		// Collect input via bubbletea
+		result := collectInput(modelName, bgManager.RunningCount())
 
-	// Print welcome before TUI starts (goes to real stdout)
-	printWelcome(modelName, projectDir, session)
-
-	// Hijack stdout: all fmt.Printf in agentTurn/tools/render goes through
-	// the pipe, and we relay it to program.Println() above the TUI.
-	origStdout := os.Stdout
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("creating stdout pipe: %w", err)
-	}
-	os.Stdout = pw
-
-	p := tea.NewProgram(m, tea.WithOutput(origStdout))
-	program = p
-
-	// Background goroutine: read from pipe, relay to TUI
-	go func() {
-		buf := make([]byte, 4096)
-		var lineBuf strings.Builder
-		for {
-			n, err := pr.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				// Split by newlines, print complete lines
-				for i, ch := range chunk {
-					if ch == '\n' {
-						line := lineBuf.String()
-						lineBuf.Reset()
-						if program != nil {
-							program.Println(line)
-						} else {
-							origStdout.WriteString(line + "\n")
-						}
-					} else if ch == '\r' {
-						// Spinner \r\033[K — just flush the line for now
-						if lineBuf.Len() > 0 {
-							// Don't print spinner partial lines
-							lineBuf.Reset()
-						}
-					} else {
-						lineBuf.WriteByte(chunk[i])
-					}
-				}
-			}
-			if err != nil {
-				// Flush remaining
-				if lineBuf.Len() > 0 {
-					line := lineBuf.String()
-					if program != nil {
-						program.Println(line)
-					} else {
-						origStdout.WriteString(line + "\n")
-					}
-				}
-				return
-			}
+		if result.quit {
+			bgManager.StopAll()
+			fmt.Println()
+			return
 		}
-	}()
 
-	_, runErr := p.Run()
+		if result.editor {
+			text, err := openEditorForInput(result.text)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Editor error: %v\n", err)
+				continue
+			}
+			if text == "" {
+				continue
+			}
+			result.text = text
+		}
 
-	// Restore stdout
-	program = nil
-	pw.Close()
-	pr.Close()
-	os.Stdout = origStdout
+		input := result.text
 
-	return runErr
+		// Slash commands
+		if strings.HasPrefix(input, "/") {
+			res := handleSlashCommand(input, session, projectDir, wsDir, provider, bgManager, st)
+			if res.newSession {
+				session = NewSession(modelName)
+				system = buildSystemPrompt(projectDir, findMemoryFile(wsDir))
+				fmt.Println("New session started.")
+			}
+			if res.resumeID != "" {
+				loaded, err := LoadSession(wsDir, res.resumeID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
+				} else {
+					session = loaded
+					if session.Model != "" && session.Model != modelName {
+						modelName = session.Model
+						newKey, newBase := detectAPIConfig(modelName)
+						if newKey != "" {
+							provider = NewProvider(modelName, newKey, newBase, maxTokens)
+						}
+					}
+					turns := countUserTurns(session.Messages)
+					fmt.Printf("Resumed: %s (%d turns)\n\n", session.Title, turns)
+					printSessionHistory(session.Messages)
+				}
+			}
+			if res.switchModel != "" {
+				modelName = res.switchModel
+				session.Model = modelName
+				if p, ok := switchFromActiveProvider(modelName); ok {
+					provider = p
+				} else {
+					newKey, newBase := detectAPIConfig(modelName)
+					if newKey == "" {
+						fmt.Fprintf(os.Stderr, "No API key found for model %s\n", modelName)
+					} else {
+						provider = NewProvider(modelName, newKey, newBase, maxTokens)
+					}
+				}
+				saveActiveModel(wsDir, modelName)
+				fmt.Printf("\nSwitched to %s%s%s\n", bold, modelName, reset)
+			}
+			continue
+		}
+
+		// !cmd — direct shell execution
+		if strings.HasPrefix(input, "!") {
+			shellCmd := strings.TrimPrefix(input, "!")
+			shellCmd = strings.TrimSpace(shellCmd)
+			if shellCmd != "" {
+				output := execDirectCommand(shellCmd, projectDir)
+				session.Messages = append(session.Messages, Message{
+					Role: "user",
+					Content: []ContentBlock{
+						{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, stripControlChars(output))},
+					},
+				})
+				if wsDir != "" {
+					session.Save(wsDir)
+				}
+			}
+			continue
+		}
+
+		// User message
+		_, expanded := expandAtFiles(input, projectDir)
+		session.Messages = append(session.Messages, Message{
+			Role: "user",
+			Content: []ContentBlock{
+				{Type: "text", Text: expanded},
+			},
+		})
+
+		// Agent turn — runs with direct stdout, no bubbletea interference.
+		// Put terminal in raw mode so we can catch ESC/Ctrl+C to cancel.
+		turnCtx, turnCancel := context.WithCancel(ctx)
+
+		// Enter raw mode for key listening during turn
+		oldState, rawErr := term.MakeRaw(os.Stdin.Fd())
+		if rawErr == nil {
+			go func() {
+				buf := make([]byte, 1)
+				for {
+					n, err := os.Stdin.Read(buf)
+					if err != nil || n == 0 {
+						return
+					}
+					if buf[0] == 0x1b || buf[0] == 0x03 { // ESC or Ctrl+C
+						turnCancel()
+						return
+					}
+				}
+			}()
+		}
+
+		turnStart := time.Now()
+		lastInput, turnErr := agentTurn(turnCtx, provider, system, &session.Messages, tools, executor, st)
+		elapsed := time.Since(turnStart)
+		turnCancel()
+
+		// Restore terminal
+		if rawErr == nil {
+			term.Restore(os.Stdin.Fd(), oldState)
+		}
+
+		if turnErr != nil {
+			if ctx.Err() != nil {
+				fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
+				if len(session.Messages) > 0 && session.Messages[len(session.Messages)-1].Role == "user" {
+					session.Messages = session.Messages[:len(session.Messages)-1]
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, turnErr, reset)
+			}
+		} else {
+			st.turns.Add(1)
+			newTokens := st.totalInput.Load() + st.totalOutput.Load()
+			_ = newTokens
+			cacheRead := st.totalCacheRead.Load()
+			printTurnStats(int64(lastInput), cacheRead, elapsed)
+		}
+
+		syncStats(st, session, wsDir)
+		autoCompact(lastInput, session, provider)
+	}
 }
