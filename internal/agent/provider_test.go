@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 func TestNewProviderWithProtocolUsesExplicitOpenAIForClaudeModel(t *testing.T) {
-	p := NewProviderWithProtocol("openai", "claude-sonnet-4-5", "test-key", "http://127.0.0.1/copilot", 8192)
+	p := NewProviderWithProtocol("openai", "claude-sonnet-4-5", "test-key", "http://127.0.0.1/copilot", 8192, "medium")
 	if _, ok := p.(*OpenAIProvider); !ok {
 		t.Fatalf("expected OpenAIProvider for explicit openai protocol, got %T", p)
 	}

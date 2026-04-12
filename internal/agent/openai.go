@@ -14,22 +14,28 @@ import (
 // OpenAIProvider implements Provider using the OpenAI Chat Completions API.
 // Compatible with OpenAI, Gemini, Ollama, vLLM, and other OpenAI-compatible endpoints.
 type OpenAIProvider struct {
-	Model     string
-	APIKey    string
-	BaseURL   string // e.g. "http://127.0.0.1:PORT/openai"
-	MaxTokens int
+	Model           string
+	APIKey          string
+	BaseURL         string // e.g. "http://127.0.0.1:PORT/openai"
+	MaxTokens       int
+	ReasoningEffort string
 }
 
 func (p *OpenAIProvider) Stream(ctx context.Context, system []SystemBlock, messages []Message, tools []ToolDef) (<-chan StreamEvent, error) {
 	// Convert from internal types to OpenAI format
 	oaiMessages := convertToOpenAI(system, messages)
 	oaiTools := convertToolsToOpenAI(tools)
+	reasoningEffort := p.ReasoningEffort
+	if isCopilotBaseURL(p.BaseURL) {
+		reasoningEffort = ""
+	}
 
 	req := OpenAIChatRequest{
 		Model:               p.Model,
 		Messages:            oaiMessages,
 		Tools:               oaiTools,
 		MaxCompletionTokens: p.MaxTokens,
+		ReasoningEffort:     reasoningEffort,
 		Stream:              true,
 		StreamOptions:       &OpenAIStreamOptions{IncludeUsage: true},
 	}
@@ -75,6 +81,10 @@ func buildOpenAIURL(baseURL, path string) string {
 		return base + path
 	}
 	return base + "/v1" + path
+}
+
+func isCopilotBaseURL(baseURL string) bool {
+	return strings.Contains(strings.ToLower(baseURL), "/copilot")
 }
 
 // convertToOpenAI converts internal Message format to OpenAI format.

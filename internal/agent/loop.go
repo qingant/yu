@@ -21,6 +21,7 @@ var slashCommands = []string{
 	"/clear", "/compact", "/new",
 	"/sessions", "/resume",
 	"/model", "/init",
+	"/reasoning",
 	"/jobs", "/logs", "/kill", "/rollback", "/stats",
 	"/remember", "/memory", "/forget",
 	"/copilot-login", "/copilot-logout",
@@ -130,6 +131,16 @@ func Main() {
 	if providerKey == "" {
 		providerKey = loadActiveProvider(wsDir)
 	}
+	reasoningEffort := normalizeReasoningEffort(os.Getenv("YU_REASONING_EFFORT"))
+	if reasoningEffort == "" {
+		reasoningEffort = normalizeReasoningEffort(session.ReasoningEffort)
+	}
+	if reasoningEffort == "" {
+		reasoningEffort = loadActiveReasoningEffort(wsDir)
+	}
+	if reasoningEffort == "" {
+		reasoningEffort = "medium"
+	}
 	if session.Model != "" && session.Model != model {
 		model = session.Model
 	}
@@ -142,7 +153,9 @@ func Main() {
 	}
 	activeProvider = &resolvedProvider
 	session.Provider = resolvedProvider.Key
+	session.ReasoningEffort = reasoningEffort
 	saveActiveProvider(wsDir, resolvedProvider.Key)
+	saveActiveReasoningEffort(wsDir, reasoningEffort)
 
 	maxTokens := 8192
 	provider := NewProviderWithProtocol(
@@ -151,6 +164,7 @@ func Main() {
 		resolvedProvider.APIKey,
 		resolvedProvider.BaseURL,
 		maxTokens,
+		reasoningEffort,
 	)
 
 	// System prompt
@@ -179,7 +193,7 @@ func Main() {
 	// --- Interactive mode ---
 
 	RunInteractive(session, provider, system, tools, executor, bgManager, &st,
-		projectDir, wsDir, model, maxTokens)
+		projectDir, wsDir, model, maxTokens, reasoningEffort)
 	bgManager.StopAll()
 }
 
@@ -746,11 +760,11 @@ func detectProviderConfig(model, preferredProvider string) (providerInfo, bool) 
 var activeProvider *providerInfo
 
 // switchFromActiveProvider creates a Provider using the globally selected provider context.
-func switchFromActiveProvider(model string) (Provider, bool) {
+func switchFromActiveProvider(model, reasoningEffort string) (Provider, bool) {
 	if activeProvider == nil {
 		return nil, false
 	}
-	return NewProviderWithProtocol(modelProtocol(activeProvider, model), model, activeProvider.APIKey, activeProvider.BaseURL, 8192), true
+	return NewProviderWithProtocol(modelProtocol(activeProvider, model), model, activeProvider.APIKey, activeProvider.BaseURL, 8192, reasoningEffort), true
 }
 
 func modelProtocol(p *providerInfo, model string) string {
@@ -819,13 +833,9 @@ func execDirectCommand(command, projectDir string) string {
 	return output.String()
 }
 
-// autoCompactThreshold — compact when input tokens exceed this.
-// Models with 1M context can afford much larger working sets.
-const autoCompactThreshold = 512_000
-
 // autoCompact triggers compaction when the context is getting too large.
 func autoCompact(lastInputTokens int, session *Session, provider Provider) {
-	if lastInputTokens < autoCompactThreshold {
+	if lastInputTokens < autoCompactThreshold(provider) {
 		return
 	}
 	if len(session.Messages) < 6 {
@@ -833,6 +843,15 @@ func autoCompact(lastInputTokens int, session *Session, provider Provider) {
 	}
 	fmt.Printf("\n  %s⟳ Auto-compacting context (%s input)...%s\n", yellow, formatTokens(int64(lastInputTokens)), reset)
 	compactConversation(session, provider)
+}
+
+func autoCompactThreshold(provider Provider) int {
+	switch provider.(type) {
+	case *AnthropicProvider:
+		return 256_000
+	default:
+		return 96_000
+	}
 }
 
 // sanitizeMessages fixes message pairs before sending to the API.
@@ -911,6 +930,11 @@ func sanitizeMessages(messages []Message) []Message {
 					if b.Type == "tool_result" && !validIDs[b.ToolUseID] {
 						continue // orphaned tool_result — skip
 					}
+					if b.Type == "tool_result" && i < len(messages)-2 {
+						if content, ok := b.Content.(string); ok {
+							b.Content = compactToolResultContent(content)
+						}
+					}
 					filtered = append(filtered, b)
 				}
 
@@ -926,6 +950,31 @@ func sanitizeMessages(messages []Message) []Message {
 	}
 
 	return result
+}
+
+func compactToolResultContent(content string) string {
+	const maxChars = 4000
+	const maxLines = 80
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+	originalLineCount := len(lines)
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	compacted := strings.Join(lines, "\n")
+	if len(compacted) > maxChars {
+		compacted = compacted[:maxChars]
+	}
+	compacted = strings.TrimSpace(compacted)
+	if compacted == content && originalLineCount <= maxLines {
+		return content
+	}
+	return fmt.Sprintf("[tool result summary; original output truncated]\n%s\n\n[truncated from %d lines]", compacted, originalLineCount)
 }
 
 // syncStats updates session stats from the run counters and saves.
@@ -964,6 +1013,17 @@ func loadActiveProvider(wsDir string) string {
 	return strings.TrimSpace(string(data))
 }
 
+func loadActiveReasoningEffort(wsDir string) string {
+	if wsDir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(wsDir, "active-reasoning-effort"))
+	if err != nil {
+		return ""
+	}
+	return normalizeReasoningEffort(strings.TrimSpace(string(data)))
+}
+
 func saveActiveModel(wsDir, model string) {
 	if wsDir == "" {
 		return
@@ -978,6 +1038,15 @@ func saveActiveProvider(wsDir, provider string) {
 	}
 	os.MkdirAll(wsDir, 0700)
 	os.WriteFile(filepath.Join(wsDir, "active-provider"), []byte(provider+"\n"), 0600)
+}
+
+func saveActiveReasoningEffort(wsDir, effort string) {
+	effort = normalizeReasoningEffort(effort)
+	if wsDir == "" || effort == "" {
+		return
+	}
+	os.MkdirAll(wsDir, 0700)
+	os.WriteFile(filepath.Join(wsDir, "active-reasoning-effort"), []byte(effort+"\n"), 0600)
 }
 
 func findMemoryFile(wsDir string) string {

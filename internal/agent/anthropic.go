@@ -15,10 +15,11 @@ const anthropicVersion = "2023-06-01"
 
 // AnthropicProvider implements Provider using the Anthropic Messages API.
 type AnthropicProvider struct {
-	Model     string
-	APIKey    string
-	BaseURL   string // e.g. "http://127.0.0.1:PORT/anthropic"
-	MaxTokens int
+	Model           string
+	APIKey          string
+	BaseURL         string // e.g. "http://127.0.0.1:PORT/anthropic"
+	MaxTokens       int
+	ReasoningEffort string
 }
 
 func (p *AnthropicProvider) Stream(ctx context.Context, system []SystemBlock, messages []Message, tools []ToolDef) (<-chan StreamEvent, error) {

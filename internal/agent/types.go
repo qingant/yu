@@ -131,11 +131,12 @@ type StreamDelta struct {
 // --- OpenAI Chat Completions types ---
 
 type OpenAIChatRequest struct {
-	Model               string              `json:"model"`
-	Messages            []OpenAIMessage     `json:"messages"`
-	Tools               []OpenAITool        `json:"tools,omitempty"`
-	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
-	Stream              bool                `json:"stream"`
+	Model               string               `json:"model"`
+	Messages            []OpenAIMessage      `json:"messages"`
+	Tools               []OpenAITool         `json:"tools,omitempty"`
+	MaxCompletionTokens int                  `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
+	Stream              bool                 `json:"stream"`
 	StreamOptions       *OpenAIStreamOptions `json:"stream_options,omitempty"`
 }
 
@@ -144,10 +145,10 @@ type OpenAIStreamOptions struct {
 }
 
 type OpenAIMessage struct {
-	Role       string              `json:"role"`                    // "system" | "user" | "assistant" | "tool"
-	Content    any                 `json:"content"`                 // string, []OpenAIContentPart, or nil
-	ToolCalls  []OpenAIToolCall    `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"`  // for role=tool
+	Role       string           `json:"role"`    // "system" | "user" | "assistant" | "tool"
+	Content    any              `json:"content"` // string, []OpenAIContentPart, or nil
+	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"` // for role=tool
 }
 
 type OpenAIContentPart struct {
@@ -186,10 +187,10 @@ type OpenAIChatResponse struct {
 }
 
 type OpenAIChoice struct {
-	Index        int              `json:"index"`
-	Message      *OpenAIMessage   `json:"message,omitempty"`
-	Delta        *OpenAIMessage   `json:"delta,omitempty"`
-	FinishReason string           `json:"finish_reason,omitempty"`
+	Index        int            `json:"index"`
+	Message      *OpenAIMessage `json:"message,omitempty"`
+	Delta        *OpenAIMessage `json:"delta,omitempty"`
+	FinishReason string         `json:"finish_reason,omitempty"`
 }
 
 type OpenAIUsage struct {

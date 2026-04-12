@@ -23,7 +23,12 @@ type (
 	tickMsg        time.Time            // 1-second tick for status bar
 	initMsg        struct{}             // print session history after TUI starts
 	slashSelectMsg struct{ cmd string } // user picked from slash menu
-	turnDoneMsg    struct {
+	modelSwitchMsg struct {
+		model           string
+		providerKey     string
+		reasoningEffort string
+	}
+	turnDoneMsg struct {
 		lastInput   int
 		elapsed     time.Duration
 		err         error
@@ -62,19 +67,20 @@ type uiModel struct {
 	interactFilter string
 
 	// Business context
-	session    *Session
-	provider   Provider
-	system     []SystemBlock
-	tools      []ToolDef
-	executor   *ToolExecutor
-	bgManager  *BgManager
-	st         *stats
-	projectDir string
-	wsDir      string
-	modelName  string
-	maxTokens  int
-	ctx        context.Context
-	cancel     context.CancelFunc
+	session         *Session
+	provider        Provider
+	system          []SystemBlock
+	tools           []ToolDef
+	executor        *ToolExecutor
+	bgManager       *BgManager
+	st              *stats
+	projectDir      string
+	wsDir           string
+	modelName       string
+	maxTokens       int
+	reasoningEffort string
+	ctx             context.Context
+	cancel          context.CancelFunc
 
 	// Turn cancellation
 	turnCancel context.CancelFunc
@@ -83,7 +89,7 @@ type uiModel struct {
 func newUIModel(
 	session *Session, provider Provider, system []SystemBlock,
 	tools []ToolDef, executor *ToolExecutor, bgManager *BgManager,
-	st *stats, projectDir, wsDir, modelName string, maxTokens int,
+	st *stats, projectDir, wsDir, modelName string, maxTokens int, reasoningEffort string,
 ) uiModel {
 	ta := textarea.New()
 	ta.Placeholder = "Message... (Enter send, Ctrl+J newline, /help)"
@@ -110,25 +116,26 @@ func newUIModel(
 	writeWelcome(output, modelName, projectDir, session)
 
 	return uiModel{
-		textarea:      ta,
-		spinner:       sp,
-		state:         stateIdle,
-		output:        output,
-		projectDir:    projectDir,
-		wsDir:         wsDir,
-		modelName:     modelName,
-		maxTokens:     maxTokens,
-		session:       session,
-		provider:      provider,
-		system:        system,
-		tools:         tools,
-		executor:      executor,
-		bgManager:     bgManager,
-		st:            st,
-		ctx:           ctx,
-		cancel:        cancel,
-		interactInput: ia,
-		now:           time.Now(),
+		textarea:        ta,
+		spinner:         sp,
+		state:           stateIdle,
+		output:          output,
+		projectDir:      projectDir,
+		wsDir:           wsDir,
+		modelName:       modelName,
+		maxTokens:       maxTokens,
+		reasoningEffort: reasoningEffort,
+		session:         session,
+		provider:        provider,
+		system:          system,
+		tools:           tools,
+		executor:        executor,
+		bgManager:       bgManager,
+		st:              st,
+		ctx:             ctx,
+		cancel:          cancel,
+		interactInput:   ia,
+		now:             time.Now(),
 	}
 }
 
@@ -222,6 +229,30 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.interactReq = nil
 		if msg.cmd != "" {
 			return m.submit(msg.cmd)
+		}
+		return m, nil
+
+	case modelSwitchMsg:
+		if msg.providerKey != "" {
+			if resolved, ok := lookupProvider(msg.providerKey); ok {
+				activeProvider = &resolved
+				m.provider = NewProviderWithProtocol(resolved.Protocol, msg.model, resolved.APIKey, resolved.BaseURL, m.maxTokens, effectiveReasoningEffort(msg.reasoningEffort, m.reasoningEffort))
+				m.session.Provider = resolved.Key
+				saveActiveProvider(m.wsDir, resolved.Key)
+			}
+		}
+		if msg.model != "" {
+			m.modelName = msg.model
+			m.session.Model = msg.model
+			saveActiveModel(m.wsDir, msg.model)
+		}
+		if msg.reasoningEffort != "" {
+			m.reasoningEffort = msg.reasoningEffort
+			m.session.ReasoningEffort = msg.reasoningEffort
+			saveActiveReasoningEffort(m.wsDir, msg.reasoningEffort)
+			if activeProvider != nil {
+				m.provider = NewProviderWithProtocol(activeProvider.Protocol, m.modelName, activeProvider.APIKey, activeProvider.BaseURL, m.maxTokens, m.reasoningEffort)
+			}
 		}
 		return m, nil
 
@@ -567,14 +598,39 @@ func (m *uiModel) runAgentTurn(ctx context.Context, cancel context.CancelFunc) {
 }
 
 func (m *uiModel) runSlashCommand(input string) {
-	prevProviderKey := ""
-	if activeProvider != nil {
-		prevProviderKey = activeProvider.Key
-	}
 	result := handleSlashCommand(input, m.session, m.projectDir, m.wsDir, m.provider, m.bgManager, m.st)
+	if strings.HasPrefix(input, "/model") && (result.switchProvider != "" || result.switchModel != "") {
+		model := m.modelName
+		if result.switchModel != "" {
+			model = result.switchModel
+		}
+		providerName := result.switchProvider
+		if providerName == "" && m.session.Provider != "" {
+			providerName = m.session.Provider
+		}
+		if providerName != "" {
+			if resolved, ok := lookupProvider(providerName); ok {
+				providerName = resolved.Name
+			}
+		}
+		if providerName == "" {
+			providerName = "unknown"
+		}
+		fmt.Printf("Switched to %s:%s\n", providerName, model)
+		globalProgram.Send(modelSwitchMsg{model: model, providerKey: result.switchProvider})
+		globalProgram.Send(turnDoneMsg{})
+		return
+	}
+	if strings.HasPrefix(input, "/reasoning") && result.switchReasoning != "" {
+		fmt.Printf("Reasoning effort: %s\n", result.switchReasoning)
+		globalProgram.Send(modelSwitchMsg{reasoningEffort: result.switchReasoning})
+		globalProgram.Send(turnDoneMsg{})
+		return
+	}
 	if result.newSession {
 		next := NewSession(m.modelName)
 		next.Provider = m.session.Provider
+		next.ReasoningEffort = m.session.ReasoningEffort
 		if activeProvider != nil {
 			next.Provider = activeProvider.Key
 		}
@@ -588,9 +644,13 @@ func (m *uiModel) runSlashCommand(input string) {
 			if m.session.Model != "" {
 				m.modelName = m.session.Model
 			}
+			if effort := normalizeReasoningEffort(m.session.ReasoningEffort); effort != "" {
+				m.reasoningEffort = effort
+				saveActiveReasoningEffort(m.wsDir, effort)
+			}
 			if resolved, ok := detectProviderConfig(m.modelName, m.session.Provider); ok {
 				activeProvider = &resolved
-				m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens)
+				m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens, m.reasoningEffort)
 				m.session.Provider = resolved.Key
 				saveActiveProvider(m.wsDir, resolved.Key)
 			}
@@ -599,10 +659,22 @@ func (m *uiModel) runSlashCommand(input string) {
 			printSessionHistory(m.session.Messages)
 		}
 	}
+	if result.switchProvider != "" {
+		if resolved, ok := lookupProvider(result.switchProvider); ok {
+			activeProvider = &resolved
+			m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens, m.reasoningEffort)
+			m.session.Provider = resolved.Key
+			saveActiveProvider(m.wsDir, resolved.Key)
+		}
+	}
 	if result.switchModel != "" {
 		m.modelName = result.switchModel
 		m.session.Model = m.modelName
-		if p, ok := switchFromActiveProvider(m.modelName); ok {
+		if result.switchProvider != "" {
+			if activeProvider != nil {
+				m.provider = NewProviderWithProtocol(activeProvider.Protocol, m.modelName, activeProvider.APIKey, activeProvider.BaseURL, m.maxTokens, m.reasoningEffort)
+			}
+		} else if p, ok := switchFromActiveProvider(m.modelName, m.reasoningEffort); ok {
 			m.provider = p
 			if activeProvider != nil {
 				m.session.Provider = activeProvider.Key
@@ -612,17 +684,19 @@ func (m *uiModel) runSlashCommand(input string) {
 			resolved, ok := detectProviderConfig(m.modelName, m.session.Provider)
 			if ok {
 				activeProvider = &resolved
-				m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens)
+				m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens, m.reasoningEffort)
 				m.session.Provider = resolved.Key
 				saveActiveProvider(m.wsDir, resolved.Key)
 			}
 		}
 		saveActiveModel(m.wsDir, m.modelName)
-	} else if strings.HasPrefix(input, "/model") && activeProvider != nil && activeProvider.Key != prevProviderKey {
-		if p, ok := switchFromActiveProvider(m.modelName); ok {
-			m.provider = p
-			m.session.Provider = activeProvider.Key
-			saveActiveProvider(m.wsDir, activeProvider.Key)
+	}
+	if result.switchReasoning != "" {
+		m.reasoningEffort = result.switchReasoning
+		m.session.ReasoningEffort = result.switchReasoning
+		saveActiveReasoningEffort(m.wsDir, result.switchReasoning)
+		if activeProvider != nil {
+			m.provider = NewProviderWithProtocol(activeProvider.Protocol, m.modelName, activeProvider.APIKey, activeProvider.BaseURL, m.maxTokens, m.reasoningEffort)
 		}
 	}
 	globalProgram.Send(turnDoneMsg{}) // reuse to signal done
@@ -727,6 +801,16 @@ func (m uiModel) openEditor(prefill string) tea.Cmd {
 	})
 }
 
+func effectiveReasoningEffort(next, current string) string {
+	if effort := normalizeReasoningEffort(next); effort != "" {
+		return effort
+	}
+	if effort := normalizeReasoningEffort(current); effort != "" {
+		return effort
+	}
+	return "medium"
+}
+
 // --- View ---
 
 func (m uiModel) View() string {
@@ -776,6 +860,7 @@ func (m uiModel) View() string {
 			fmt.Sprintf("  %sCommands%s", bold, reset),
 			fmt.Sprintf("  %s/help              %sShow help%s", dim, reset, reset),
 			fmt.Sprintf("  %s/model             %sSwitch model%s", dim, reset, reset),
+			fmt.Sprintf("  %s/reasoning         %sSet reasoning effort%s", dim, reset, reset),
 			fmt.Sprintf("  %s/sessions          %sList sessions%s", dim, reset, reset),
 			fmt.Sprintf("  %s/resume            %sResume a session%s", dim, reset, reset),
 			fmt.Sprintf("  %s/new               %sNew session%s", dim, reset, reset),
@@ -939,10 +1024,10 @@ func stripANSI(s string) string {
 func RunInteractive(
 	session *Session, provider Provider, system []SystemBlock,
 	tools []ToolDef, executor *ToolExecutor, bgManager *BgManager,
-	st *stats, projectDir, wsDir, modelName string, maxTokens int,
+	st *stats, projectDir, wsDir, modelName string, maxTokens int, reasoningEffort string,
 ) {
 	m := newUIModel(session, provider, system, tools, executor, bgManager,
-		st, projectDir, wsDir, modelName, maxTokens)
+		st, projectDir, wsDir, modelName, maxTokens, reasoningEffort)
 
 	// Print welcome to real stdout before hijacking (stays in scroll history)
 	if m.output.Len() > 0 {

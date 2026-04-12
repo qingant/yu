@@ -76,6 +76,8 @@ func basePrompt(projectDir string) string {
 
 # Guidelines
 - Read files before modifying them. Understand existing code first.
+- Prefer search_files or list_files before read_file when locating code. Read focused slices with offset/limit instead of whole files when possible.
+- Avoid reading large generated, lock, minified, or vendor files in full unless they are directly relevant.
 - Use edit_file for targeted changes. Use write_file only for new files or full rewrites.
 - For non-trivial tasks, use the plan tool first to propose your approach.
 - Be concise in responses. Show what you did, not lengthy explanations.

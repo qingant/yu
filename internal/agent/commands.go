@@ -1,24 +1,31 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // commandResult tells the main loop what to do after a command.
 type commandResult struct {
-	handled     bool   // command was recognized
-	newSession  bool   // start a new session
-	resumeID    string // resume this session ID
-	switchModel string // change model
+	handled         bool   // command was recognized
+	newSession      bool   // start a new session
+	resumeID        string // resume this session ID
+	switchModel     string // change model
+	switchProvider  string // change provider
+	switchReasoning string // change reasoning effort
 }
 
 // handleSlashCommand processes user input starting with "/".
@@ -91,9 +98,28 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 			return commandResult{handled: true, switchModel: parts[1]}
 		}
 		// Interactive model picker
-		if chosen := pickModel(session.Model); chosen != "" {
-			return commandResult{handled: true, switchModel: chosen}
+		if chosenModel, chosenProvider, ok := pickModel(session.Model); ok {
+			return commandResult{handled: true, switchModel: chosenModel, switchProvider: chosenProvider.Key}
 		}
+
+	case "/reasoning":
+		if len(parts) > 1 {
+			effort := normalizeReasoningEffort(parts[1])
+			if effort == "" {
+				fmt.Println("Usage: /reasoning [low|medium|high]")
+				return commandResult{handled: true}
+			}
+			return commandResult{handled: true, switchReasoning: effort}
+		}
+		selected := uiSelectAt(reasoningEffortOptions(session.ReasoningEffort), reasoningEffortIndex(session.ReasoningEffort))
+		if selected == "" || selected == selectBack {
+			return commandResult{handled: true}
+		}
+		effort := normalizeReasoningEffort(stripANSI(selected))
+		if effort == "" {
+			return commandResult{handled: true}
+		}
+		return commandResult{handled: true, switchReasoning: effort}
 
 	case "/compact":
 		compactConversation(session, provider)
@@ -201,6 +227,7 @@ Commands:
   /sessions          List saved sessions
   /resume [n]        Resume a saved session
   /model [name]      Show or switch model
+  /reasoning [level] Set reasoning effort (low|medium|high)
   /jobs              List background processes
   /logs <id> [n]     Show last n lines of process output
   /kill <id>         Stop a background process
@@ -258,6 +285,15 @@ var openaiModels = []modelInfo{
 // cached model lists (fetched from API)
 var copilotModelCache []modelInfo
 var customModelCache []modelInfo
+var copilotModelCacheExpiresAt time.Time
+
+var reasoningLevels = []string{"low", "medium", "high"}
+
+type copilotModelCacheFile struct {
+	CacheKey  string      `json:"cache_key"`
+	FetchedAt time.Time   `json:"fetched_at"`
+	Models    []modelInfo `json:"models"`
+}
 
 // detectProviders returns available providers from environment.
 func detectProviders() []providerInfo {
@@ -317,6 +353,41 @@ func detectProviders() []providerInfo {
 	return providers
 }
 
+func normalizeReasoningEffort(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func reasoningEffortIndex(current string) int {
+	current = normalizeReasoningEffort(current)
+	for i, effort := range reasoningLevels {
+		if effort == current {
+			return i
+		}
+	}
+	return 1
+}
+
+func reasoningEffortOptions(current string) []string {
+	current = normalizeReasoningEffort(current)
+	if current == "" {
+		current = "medium"
+	}
+	options := make([]string, 0, len(reasoningLevels))
+	for _, effort := range reasoningLevels {
+		label := effort
+		if effort == current {
+			label = label + " " + dim + "(current)" + reset
+		}
+		options = append(options, label)
+	}
+	return options
+}
+
 func normalizeProviderKey(key string) string {
 	switch strings.TrimSpace(strings.ToLower(key)) {
 	case "":
@@ -346,11 +417,11 @@ func lookupProvider(key string) (providerInfo, bool) {
 
 // pickModel runs the two-level provider → model selection.
 // Esc/q in model list goes back to provider. Esc/q in provider list cancels.
-func pickModel(current string) string {
+func pickModel(current string) (string, providerInfo, bool) {
 	providers := detectProviders()
 	if len(providers) == 0 {
 		fmt.Println("  No providers detected. Set API keys in environment or .yu/env")
-		return ""
+		return "", providerInfo{}, false
 	}
 
 	var providerLabels []string
@@ -365,7 +436,7 @@ func pickModel(current string) string {
 		fmt.Printf("\n  %sProvider:%s\n", bold, reset)
 		selectedLabel := uiSelect(providerLabels)
 		if selectedLabel == "" || selectedLabel == selectBack {
-			return "" // exit
+			return "", providerInfo{}, false // exit
 		}
 
 		var chosen *providerInfo
@@ -376,7 +447,7 @@ func pickModel(current string) string {
 			}
 		}
 		if chosen == nil {
-			return ""
+			return "", providerInfo{}, false
 		}
 
 		// Step 2: Get models
@@ -414,16 +485,13 @@ func pickModel(current string) string {
 			continue // back to provider
 		}
 		if selected == "" {
-			return "" // exit
+			return "", providerInfo{}, false // exit
 		}
 
 		for i, l := range labels {
 			if l == selected {
 				activeProvider = chosen
-				if models[i].ID == current {
-					return ""
-				}
-				return models[i].ID
+				return models[i].ID, *chosen, true
 			}
 		}
 	}
@@ -484,25 +552,31 @@ func fetchCustomModels(baseURL, apiKey string) []modelInfo {
 }
 
 func fetchCopilotModels(baseURL, apiKey string) []modelInfo {
-	if copilotModelCache != nil {
+	cacheKey := copilotModelCacheKey(baseURL, apiKey)
+	if copilotModelCache != nil && time.Now().Before(copilotModelCacheExpiresAt) {
 		return copilotModelCache
+	}
+	if models, fetchedAt := loadCopilotModelCache(cacheKey); len(models) > 0 && time.Since(fetchedAt) < 24*time.Hour {
+		copilotModelCache = models
+		copilotModelCacheExpiresAt = fetchedAt.Add(24 * time.Hour)
+		return models
 	}
 
 	url := buildOpenAIURL(baseURL, "/models")
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil
+		return loadStaleCopilotModels(cacheKey)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return loadStaleCopilotModels(cacheKey)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil
+		return loadStaleCopilotModels(cacheKey)
 	}
 
 	var result struct {
@@ -530,8 +604,168 @@ func fetchCopilotModels(baseURL, apiKey string) []modelInfo {
 		}
 		models = append(models, modelInfo{ID: m.ID, Display: display})
 	}
+	models = validateCopilotModels(baseURL, apiKey, models)
+	if len(models) == 0 {
+		return loadStaleCopilotModels(cacheKey)
+	}
 	copilotModelCache = models
+	copilotModelCacheExpiresAt = time.Now().Add(24 * time.Hour)
+	saveCopilotModelCache(cacheKey, models)
 	return models
+}
+
+func validateCopilotModels(baseURL, apiKey string, models []modelInfo) []modelInfo {
+	if len(models) <= 1 {
+		var valid []modelInfo
+		for _, model := range models {
+			ok, err := probeCopilotModel(baseURL, apiKey, model.ID)
+			if err != nil {
+				valid = append(valid, model)
+				continue
+			}
+			if ok {
+				valid = append(valid, model)
+			}
+		}
+		return valid
+	}
+
+	const maxConcurrentProbes = 6
+	keep := make([]bool, len(models))
+	sem := make(chan struct{}, maxConcurrentProbes)
+	var wg sync.WaitGroup
+
+	for i, model := range models {
+		wg.Add(1)
+		go func(i int, model modelInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ok, err := probeCopilotModel(baseURL, apiKey, model.ID)
+			if err != nil {
+				// Keep the model on ambiguous/transient errors so temporary upstream
+				// issues don't wipe the list. Only explicit unsupported responses
+				// should remove a model.
+				keep[i] = true
+				return
+			}
+			keep[i] = ok
+		}(i, model)
+	}
+	wg.Wait()
+
+	valid := make([]modelInfo, 0, len(models))
+	for i, model := range models {
+		if keep[i] {
+			valid = append(valid, model)
+		}
+	}
+	return valid
+}
+
+func probeCopilotModel(baseURL, apiKey, model string) (bool, error) {
+	reqBody := map[string]any{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": "ping"},
+		},
+		"stream":                false,
+		"max_completion_tokens": 1,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return false, err
+	}
+
+	req, err := http.NewRequest("POST", buildOpenAIURL(baseURL, "/chat/completions"), bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, nil
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	bodyText := strings.ToLower(string(data))
+	if strings.Contains(bodyText, "model_not_supported") ||
+		strings.Contains(bodyText, "unsupported_api_for_model") ||
+		strings.Contains(bodyText, "requested model is not supported") ||
+		strings.Contains(bodyText, "not accessible via the /chat/completions endpoint") {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("probe status %d", resp.StatusCode)
+}
+
+func copilotModelCachePath() string {
+	wsDir := os.Getenv("YU_WORKSPACE_DIR")
+	if wsDir == "" {
+		home, _ := os.UserHomeDir()
+		wsDir = filepath.Join(home, ".yu")
+	}
+	return filepath.Join(wsDir, "copilot-model-cache.json")
+}
+
+func copilotModelCacheKey(baseURL, apiKey string) string {
+	sum := sha256.Sum256([]byte(baseURL + "\n" + apiKey))
+	return hex.EncodeToString(sum[:])
+}
+
+func loadCopilotModelCache(cacheKey string) ([]modelInfo, time.Time) {
+	path := copilotModelCachePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, time.Time{}
+	}
+	var cache copilotModelCacheFile
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, time.Time{}
+	}
+	if cache.CacheKey != "" && cache.CacheKey != cacheKey {
+		return nil, time.Time{}
+	}
+	return cache.Models, cache.FetchedAt
+}
+
+func loadStaleCopilotModels(cacheKey string) []modelInfo {
+	models, fetchedAt := loadCopilotModelCache(cacheKey)
+	if len(models) == 0 {
+		return nil
+	}
+	copilotModelCache = models
+	if fetchedAt.IsZero() {
+		copilotModelCacheExpiresAt = time.Now().Add(time.Hour)
+	} else {
+		copilotModelCacheExpiresAt = fetchedAt.Add(24 * time.Hour)
+	}
+	return models
+}
+
+func saveCopilotModelCache(cacheKey string, models []modelInfo) {
+	path := copilotModelCachePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return
+	}
+	data, err := json.MarshalIndent(copilotModelCacheFile{
+		CacheKey:  cacheKey,
+		FetchedAt: time.Now(),
+		Models:    models,
+	}, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0600)
 }
 
 // --- Stats ---
@@ -767,7 +1001,7 @@ func compactConversation(session *Session, provider Provider) {
 					fmt.Fprintf(&transcript, "User: %s\n\n", b.Text)
 				case "tool_result":
 					content, _ := b.Content.(string)
-					fmt.Fprintf(&transcript, "[Tool result for %s]: %s\n\n", b.ToolUseID, content)
+					fmt.Fprintf(&transcript, "[Tool result for %s]: %s\n\n", b.ToolUseID, summarizeToolResultForCompact(content))
 				}
 			}
 		case "assistant":
@@ -776,7 +1010,7 @@ func compactConversation(session *Session, provider Provider) {
 				case "text":
 					fmt.Fprintf(&transcript, "Assistant: %s\n\n", b.Text)
 				case "tool_use":
-					fmt.Fprintf(&transcript, "[Tool call: %s(%s)]\n\n", b.Name, string(b.Input))
+					fmt.Fprintf(&transcript, "[Tool call: %s - %s]\n\n", b.Name, summarizeToolInputForCompact(b))
 				}
 			}
 		}
@@ -820,6 +1054,38 @@ func compactConversation(session *Session, provider Provider) {
 	}}, kept...)
 
 	fmt.Printf("done (%d messages → summary + %d recent)\n", len(toSummarize), keepCount)
+}
+
+func summarizeToolResultForCompact(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "(empty)"
+	}
+	lines := strings.Split(content, "\n")
+	previewLines := lines
+	if len(previewLines) > 12 {
+		previewLines = previewLines[:12]
+	}
+	preview := strings.Join(previewLines, "\n")
+	if len(preview) > 1200 {
+		preview = preview[:1200]
+	}
+	if len(lines) > len(previewLines) || len(content) > len(preview) {
+		return fmt.Sprintf("%s\n... (%d total lines, truncated for compaction)", strings.TrimSpace(preview), len(lines))
+	}
+	return preview
+}
+
+func summarizeToolInputForCompact(block ContentBlock) string {
+	preview := toolInputPreview(block)
+	preview = strings.TrimSpace(preview)
+	if preview == "" {
+		return "invoked"
+	}
+	if len(preview) > 200 {
+		preview = preview[:200] + "..."
+	}
+	return preview
 }
 
 // --- Memory helpers ---

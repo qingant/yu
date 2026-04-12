@@ -22,15 +22,16 @@ type TokenStats struct {
 
 // Session holds a conversation that can be persisted to disk.
 type Session struct {
-	ID             string     `json:"id"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	Model          string     `json:"model"`
-	Provider       string     `json:"provider,omitempty"`
-	Title          string     `json:"title"`
-	Messages       []Message  `json:"messages"`
-	CompactSummary string     `json:"compact_summary,omitempty"`
-	Stats          TokenStats `json:"stats"`
+	ID              string     `json:"id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	Model           string     `json:"model"`
+	Provider        string     `json:"provider,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	Title           string     `json:"title"`
+	Messages        []Message  `json:"messages"`
+	CompactSummary  string     `json:"compact_summary,omitempty"`
+	Stats           TokenStats `json:"stats"`
 }
 
 // SessionInfo is a lightweight summary for listing sessions.
@@ -45,10 +46,11 @@ type SessionInfo struct {
 // NewSession creates a fresh session.
 func NewSession(model string) *Session {
 	return &Session{
-		ID:        sessionID(),
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Model:     model,
+		ID:              sessionID(),
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+		Model:           model,
+		ReasoningEffort: "medium",
 	}
 }
 
