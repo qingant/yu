@@ -36,13 +36,13 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 
 	switch cmd {
 	case "/exit", "/quit":
-		fmt.Println("Goodbye.")
+		outPrintln("Goodbye.")
 		os.Exit(0)
 
 	case "/clear":
 		session.Messages = nil
 		session.CompactSummary = ""
-		fmt.Println("Conversation cleared.")
+		outPrintln("Conversation cleared.")
 
 	case "/new":
 		return commandResult{handled: true, newSession: true}
@@ -50,33 +50,33 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 	case "/sessions", "/ls":
 		sessions := ListSessions(wsDir)
 		if len(sessions) == 0 {
-			fmt.Println("No saved sessions.")
+			outPrintln("No saved sessions.")
 			return commandResult{handled: true}
 		}
-		fmt.Println()
+		outPrintln()
 		for i, s := range sessions {
 			age := formatAge(s.UpdatedAt)
-			fmt.Printf("  \033[1m%d)\033[0m %s \033[2m(%s, %d turns, %s)\033[0m\n",
+			outPrintf("  \033[1m%d)\033[0m %s \033[2m(%s, %d turns, %s)\033[0m\n",
 				i+1, s.Title, s.Model, s.Turns, age)
 		}
-		fmt.Println()
+		outPrintln()
 
 	case "/resume":
 		sessions := ListSessions(wsDir)
 		if len(sessions) == 0 {
-			fmt.Println("No saved sessions.")
+			outPrintln("No saved sessions.")
 			return commandResult{handled: true}
 		}
 		if len(parts) > 1 {
 			n, err := strconv.Atoi(parts[1])
 			if err != nil || n < 1 || n > len(sessions) {
-				fmt.Printf("Invalid session number. Use 1-%d\n", len(sessions))
+				outPrintf("Invalid session number. Use 1-%d\n", len(sessions))
 				return commandResult{handled: true}
 			}
 			return commandResult{handled: true, resumeID: sessions[n-1].ID}
 		}
 		// Interactive selection
-		fmt.Println()
+		outPrintln()
 		var labels []string
 		for _, s := range sessions {
 			age := formatAge(s.UpdatedAt)
@@ -106,7 +106,7 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 		if len(parts) > 1 {
 			effort := normalizeReasoningEffort(parts[1])
 			if effort == "" {
-				fmt.Println("Usage: /reasoning [low|medium|high]")
+				outPrintln("Usage: /reasoning [low|medium|high]")
 				return commandResult{handled: true}
 			}
 			return commandResult{handled: true, switchReasoning: effort}
@@ -126,40 +126,40 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 
 	case "/remember":
 		if len(parts) < 2 {
-			fmt.Println("Usage: /remember <text to remember>")
+			outPrintln("Usage: /remember <text to remember>")
 			return commandResult{handled: true}
 		}
 		text := strings.TrimPrefix(input, "/remember ")
 		appendMemory(wsDir, text)
-		fmt.Println("Remembered.")
+		outPrintln("Remembered.")
 
 	case "/memory":
 		showMemory(wsDir)
 
 	case "/forget":
 		clearMemory(wsDir)
-		fmt.Println("Memory cleared.")
+		outPrintln("Memory cleared.")
 
 	case "/jobs", "/bg":
 		procs := bgm.List()
 		if len(procs) == 0 {
-			fmt.Println("No background processes.")
+			outPrintln("No background processes.")
 		} else {
-			fmt.Println()
+			outPrintln()
 			for _, p := range procs {
-				fmt.Printf("  %s\n", p.FormatStatus())
+				outPrintf("  %s\n", p.FormatStatus())
 			}
-			fmt.Println()
+			outPrintln()
 		}
 
 	case "/logs":
 		if len(parts) < 2 {
-			fmt.Println("Usage: /logs <id> [lines]")
+			outPrintln("Usage: /logs <id> [lines]")
 			return commandResult{handled: true}
 		}
 		id, err := strconv.Atoi(parts[1])
 		if err != nil {
-			fmt.Println("Invalid process ID")
+			outPrintln("Invalid process ID")
 			return commandResult{handled: true}
 		}
 		tail := 50
@@ -170,32 +170,32 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 		}
 		logs, err := bgm.Logs(id, tail)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			errPrintf("%v\n", err)
 		} else {
-			fmt.Println(logs)
+			outPrintln(logs)
 		}
 
 	case "/kill":
 		if len(parts) < 2 {
-			fmt.Println("Usage: /kill <id>")
+			outPrintln("Usage: /kill <id>")
 			return commandResult{handled: true}
 		}
 		id, err := strconv.Atoi(parts[1])
 		if err != nil {
-			fmt.Println("Invalid process ID")
+			outPrintln("Invalid process ID")
 			return commandResult{handled: true}
 		}
 		if err := bgm.Stop(id); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			errPrintf("%v\n", err)
 		} else {
-			fmt.Printf("Stopped #%d\n", id)
+			outPrintf("Stopped #%d\n", id)
 		}
 
 	case "/copilot-login":
-		fmt.Println("Run outside the sandbox: yu github-copilot login")
+		outPrintln("Run outside the sandbox: yu github-copilot login")
 
 	case "/copilot-logout":
-		fmt.Println("Run outside the sandbox: yu github-copilot logout")
+		outPrintln("Run outside the sandbox: yu github-copilot logout")
 
 	case "/rollback":
 		doRollback(projectDir)
@@ -210,14 +210,14 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 		printHelp()
 
 	default:
-		fmt.Printf("Unknown command: %s (type /help)\n", cmd)
+		outPrintf("Unknown command: %s (type /help)\n", cmd)
 	}
 
 	return commandResult{handled: true}
 }
 
 func printHelp() {
-	fmt.Println(`
+	outPrintln(`
 Commands:
   /help              Show this help
   /init              Create Yu.md in project root
@@ -420,7 +420,7 @@ func lookupProvider(key string) (providerInfo, bool) {
 func pickModel(current string) (string, providerInfo, bool) {
 	providers := detectProviders()
 	if len(providers) == 0 {
-		fmt.Println("  No providers detected. Set API keys in environment or .yu/env")
+		outPrintln("  No providers detected. Set API keys in environment or .yu/env")
 		return "", providerInfo{}, false
 	}
 
@@ -429,11 +429,11 @@ func pickModel(current string) (string, providerInfo, bool) {
 		providerLabels = append(providerLabels, p.Name)
 	}
 
-	fmt.Printf("\n  Current: %s%s%s\n", bold, current, reset)
+	outPrintf("\n  Current: %s%s%s\n", bold, current, reset)
 
 	for {
 		// Step 1: Pick provider
-		fmt.Printf("\n  %sProvider:%s\n", bold, reset)
+		outPrintf("\n  %sProvider:%s\n", bold, reset)
 		selectedLabel := uiSelect(providerLabels)
 		if selectedLabel == "" || selectedLabel == selectBack {
 			return "", providerInfo{}, false // exit
@@ -452,15 +452,12 @@ func pickModel(current string) (string, providerInfo, bool) {
 
 		// Step 2: Get models
 		if chosen.Key == "yu-custom" {
-			fmt.Printf("  %sFetching models...%s", dim, reset)
+			outPrintf("  %sFetching models...%s\n", dim, reset)
 		}
 		models := modelsForProvider(*chosen)
-		if chosen.Key == "yu-custom" {
-			fmt.Print("\r\033[K")
-		}
 
 		if len(models) == 0 {
-			fmt.Printf("  No models available for %s\n", chosen.Name)
+			outPrintf("  No models available for %s\n", chosen.Name)
 			continue // back to provider
 		}
 
@@ -479,7 +476,7 @@ func pickModel(current string) (string, providerInfo, bool) {
 			}
 		}
 
-		fmt.Printf("\n  %sModel:%s  %s(u: back, q: exit)%s\n", bold, reset, dim, reset)
+		outPrintf("\n  %sModel:%s  %s(u: back, q: exit)%s\n", bold, reset, dim, reset)
 		selected := uiSelectAt(labels, currentIdx)
 		if selected == selectBack {
 			continue // back to provider
@@ -777,24 +774,24 @@ func printStats(st *stats, session *Session, wsDir string) {
 	runCache := st.totalCacheRead.Load()
 	runTurns := int(st.turns.Load())
 
-	fmt.Printf("\n  %sThis run:%s\n", bold, reset)
-	fmt.Printf("    Turns:    %d\n", runTurns)
-	fmt.Printf("    Input:    %s\n", formatTokens(runIn))
-	fmt.Printf("    Output:   %s\n", formatTokens(runOut))
-	fmt.Printf("    Total:    %s\n", formatTokens(runIn+runOut))
+	outPrintf("\n  %sThis run:%s\n", bold, reset)
+	outPrintf("    Turns:    %d\n", runTurns)
+	outPrintf("    Input:    %s\n", formatTokens(runIn))
+	outPrintf("    Output:   %s\n", formatTokens(runOut))
+	outPrintf("    Total:    %s\n", formatTokens(runIn+runOut))
 	if runCache > 0 {
-		fmt.Printf("    Cached:   %s\n", formatTokens(runCache))
+		outPrintf("    Cached:   %s\n", formatTokens(runCache))
 	}
 
 	// Session (including previous runs in this session)
-	fmt.Printf("\n  %sSession:%s  %s\n", bold, reset, session.Title)
+	outPrintf("\n  %sSession:%s  %s\n", bold, reset, session.Title)
 	sesIn := session.Stats.InputTokens + runIn
 	sesOut := session.Stats.OutputTokens + runOut
 	sesTurns := session.Stats.Turns + runTurns
-	fmt.Printf("    Turns:    %d\n", sesTurns)
-	fmt.Printf("    Input:    %s\n", formatTokens(sesIn))
-	fmt.Printf("    Output:   %s\n", formatTokens(sesOut))
-	fmt.Printf("    Total:    %s\n", formatTokens(sesIn+sesOut))
+	outPrintf("    Turns:    %d\n", sesTurns)
+	outPrintf("    Input:    %s\n", formatTokens(sesIn))
+	outPrintf("    Output:   %s\n", formatTokens(sesOut))
+	outPrintf("    Total:    %s\n", formatTokens(sesIn+sesOut))
 
 	// Global (all sessions)
 	if wsDir != "" {
@@ -803,14 +800,14 @@ func printStats(st *stats, session *Session, wsDir string) {
 		global.InputTokens += runIn
 		global.OutputTokens += runOut
 		global.Turns += runTurns
-		fmt.Printf("\n  %sAll sessions:%s\n", bold, reset)
-		fmt.Printf("    Sessions: %d\n", len(ListSessions(wsDir)))
-		fmt.Printf("    Turns:    %d\n", global.Turns)
-		fmt.Printf("    Input:    %s\n", formatTokens(global.InputTokens))
-		fmt.Printf("    Output:   %s\n", formatTokens(global.OutputTokens))
-		fmt.Printf("    Total:    %s\n", formatTokens(global.InputTokens+global.OutputTokens))
+		outPrintf("\n  %sAll sessions:%s\n", bold, reset)
+		outPrintf("    Sessions: %d\n", len(ListSessions(wsDir)))
+		outPrintf("    Turns:    %d\n", global.Turns)
+		outPrintf("    Input:    %s\n", formatTokens(global.InputTokens))
+		outPrintf("    Output:   %s\n", formatTokens(global.OutputTokens))
+		outPrintf("    Total:    %s\n", formatTokens(global.InputTokens+global.OutputTokens))
 	}
-	fmt.Println()
+	outPrintln()
 }
 
 // --- Rollback ---
@@ -826,7 +823,7 @@ type snapshotEntry struct {
 func doRollback(projectDir string) {
 	yuBin, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot find yu binary: %v\n", err)
+		errPrintf("Cannot find yu binary: %v\n", err)
 		return
 	}
 
@@ -834,13 +831,13 @@ func doRollback(projectDir string) {
 	cmd := exec.Command(yuBin, "snapshots", projectDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to list snapshots: %v\n%s", err, string(output))
+		errPrintf("Failed to list snapshots: %v\n%s", err, string(output))
 		return
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) == 0 || (len(lines) == 1 && strings.Contains(lines[0], "No snapshots")) {
-		fmt.Println("  No snapshots available.")
+		outPrintln("  No snapshots available.")
 		return
 	}
 
@@ -858,7 +855,7 @@ func doRollback(projectDir string) {
 	}
 
 	if len(entries) == 0 {
-		fmt.Println("  No snapshots available.")
+		outPrintln("  No snapshots available.")
 		return
 	}
 
@@ -870,7 +867,7 @@ func doRollback(projectDir string) {
 		labels = append(labels, label)
 	}
 
-	fmt.Printf("\n  %sSelect snapshot to restore:%s\n", bold, reset)
+	outPrintf("\n  %sSelect snapshot to restore:%s\n", bold, reset)
 	selected := uiSelect(labels)
 	if selected == "" || selected == selectBack {
 		return
@@ -886,10 +883,10 @@ func doRollback(projectDir string) {
 	}
 
 	// Confirm
-	fmt.Printf("\n  %sRollback to snapshot #%s? This will overwrite current files.%s\n", yellow, selectedID, reset)
+	outPrintf("\n  %sRollback to snapshot #%s? This will overwrite current files.%s\n", yellow, selectedID, reset)
 	confirm := uiSelect([]string{"Yes, rollback", "Cancel"})
 	if confirm != "Yes, rollback" {
-		fmt.Println("  Cancelled.")
+		outPrintln("  Cancelled.")
 		return
 	}
 
@@ -897,10 +894,10 @@ func doRollback(projectDir string) {
 	rbCmd := exec.Command(yuBin, "rollback", selectedID, projectDir)
 	rbOutput, err := rbCmd.CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  Rollback failed: %v\n%s", err, string(rbOutput))
+		errPrintf("  Rollback failed: %v\n%s", err, string(rbOutput))
 		return
 	}
-	fmt.Printf("  %s✓ Rolled back to snapshot #%s%s\n", green, selectedID, reset)
+	outPrintf("  %s✓ Rolled back to snapshot #%s%s\n", green, selectedID, reset)
 }
 
 func parseSnapshotLine(line string) snapshotEntry {
@@ -957,7 +954,7 @@ func initProjectContract(projectDir string) {
 	for _, name := range contractFileNames {
 		path := filepath.Join(projectDir, name)
 		if _, err := os.Stat(path); err == nil {
-			fmt.Printf("Contract file already exists: %s\n", name)
+			outPrintf("Contract file already exists: %s\n", name)
 			return
 		}
 	}
@@ -969,16 +966,16 @@ func initProjectContract(projectDir string) {
 <!-- Add coding conventions, project structure notes, or task-specific instructions here. -->
 `
 	if err := os.WriteFile(path, []byte(template), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating Yu.md: %v\n", err)
+		errPrintf("Error creating Yu.md: %v\n", err)
 		return
 	}
-	fmt.Printf("Created %s\n", path)
+	outPrintf("Created %s\n", path)
 }
 
 // compactConversation summarizes old messages and replaces them with a summary.
 func compactConversation(session *Session, provider Provider) {
 	if len(session.Messages) < 6 {
-		fmt.Println("Conversation too short to compact.")
+		outPrintln("Conversation too short to compact.")
 		return
 	}
 
@@ -987,7 +984,7 @@ func compactConversation(session *Session, provider Provider) {
 	toSummarize := session.Messages[:len(session.Messages)-keepCount]
 	kept := session.Messages[len(session.Messages)-keepCount:]
 
-	fmt.Print("\033[2mCompacting... \033[0m")
+	outPrint("\033[2mCompacting... \033[0m")
 
 	// Render conversation as a text transcript, then ask the model to summarize.
 	// This avoids tool_use/tool_result validation issues and preserves full context.
@@ -1027,7 +1024,7 @@ func compactConversation(session *Session, provider Provider) {
 	system := []SystemBlock{{Type: "text", Text: "You are a helpful assistant. Summarize the provided conversation concisely."}}
 	ch, err := provider.Stream(context.Background(), system, summaryMessages, nil)
 	if err != nil {
-		fmt.Printf("\n\033[31mCompact failed: %v\033[0m\n", err)
+		errPrintf("\n\033[31mCompact failed: %v\033[0m\n", err)
 		return
 	}
 
@@ -1053,7 +1050,7 @@ func compactConversation(session *Session, provider Provider) {
 		}},
 	}}, kept...)
 
-	fmt.Printf("done (%d messages → summary + %d recent)\n", len(toSummarize), keepCount)
+	outPrintf("done (%d messages → summary + %d recent)\n", len(toSummarize), keepCount)
 }
 
 func summarizeToolResultForCompact(content string) string {
@@ -1099,7 +1096,7 @@ func appendMemory(wsDir string, text string) {
 	path := memoryPath(wsDir)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing memory: %v\n", err)
+		errPrintf("Error writing memory: %v\n", err)
 		return
 	}
 	defer f.Close()
@@ -1110,10 +1107,10 @@ func showMemory(wsDir string) {
 	path := memoryPath(wsDir)
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) == 0 {
-		fmt.Println("No memory saved. Use /remember <text> to add notes.")
+		outPrintln("No memory saved. Use /remember <text> to add notes.")
 		return
 	}
-	fmt.Printf("\n%s\n", string(data))
+	outPrintf("\n%s\n", string(data))
 }
 
 func clearMemory(wsDir string) {

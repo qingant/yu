@@ -19,7 +19,6 @@ var globalProgram *tea.Program
 // --- Messages ---
 
 type (
-	outputMsg      string               // chunk from stdout pipe
 	tickMsg        time.Time            // 1-second tick for status bar
 	initMsg        struct{}             // print session history after TUI starts
 	slashSelectMsg struct{ cmd string } // user picked from slash menu
@@ -220,10 +219,6 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	case outputMsg:
-		// No longer used — relay prints directly via program.Println()
-		return m, nil
-
 	case slashSelectMsg:
 		m.state = stateIdle
 		m.interactReq = nil
@@ -346,7 +341,7 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// --- Working state: can type, ESC/Ctrl+C cancels, Enter blocked ---
 	if m.state == stateWorking {
-		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+		if msg.Type == tea.KeyCtrlC || isEscapeKey(msg) {
 			if m.turnCancel != nil {
 				m.turnCancel()
 			}
@@ -367,10 +362,6 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.bgManager.StopAll()
 		m.cancel()
 		return m, tea.Quit
-
-	case tea.KeyEsc:
-		m.textarea.Reset()
-		return m, nil
 
 	case tea.KeyTab:
 		return m.completeSlashCmd()
@@ -399,6 +390,10 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(msg.Runes) == 1 && msg.Runes[0] == '?' && m.textarea.Value() == "" {
 			return m.showHelp()
 		}
+	}
+	if isEscapeKey(msg) {
+		m.textarea.Reset()
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -431,7 +426,7 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.output.WriteString(fmt.Sprintf("  %s✓ %s%s\n", green, selected, reset))
 			return m, nil
 
-		case tea.KeyEsc, tea.KeyCtrlC:
+		case tea.KeyCtrlC:
 			req.Response <- ""
 			m.state = stateWorking
 			m.interactReq = nil
@@ -465,6 +460,13 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if isEscapeKey(msg) {
+			req.Response <- ""
+			m.state = stateWorking
+			m.interactReq = nil
+			m.interactFilter = ""
+			return m, nil
+		}
 		return m, nil
 	}
 
@@ -477,7 +479,13 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.interactReq = nil
 		return m, nil
 
-	case tea.KeyEsc, tea.KeyCtrlC:
+	case tea.KeyCtrlC:
+		req.Response <- ""
+		m.state = stateWorking
+		m.interactReq = nil
+		return m, nil
+	}
+	if isEscapeKey(msg) {
 		req.Response <- ""
 		m.state = stateWorking
 		m.interactReq = nil
@@ -487,6 +495,14 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.interactInput, cmd = m.interactInput.Update(msg)
 	return m, cmd
+}
+
+func isEscapeKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyEsc {
+		return true
+	}
+	s := strings.ToLower(strings.TrimSpace(msg.String()))
+	return s == "esc" || s == "escape" || s == "ctrl+["
 }
 
 func (m uiModel) filteredInteractIndices() []int {
@@ -517,9 +533,8 @@ func (m uiModel) filteredInteractIndices() []int {
 }
 
 func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
-	// Print user message through pipe → relay → program.Println (preserved in scroll history)
 	ts := time.Now().Format("15:04:05")
-	fmt.Printf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input)
+	go outPrintf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input)
 
 	if input == "/clock" {
 		toggleClock()
@@ -563,7 +578,7 @@ func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 	turnCtx, turnCancel := context.WithCancel(m.ctx)
 	m.turnCancel = turnCancel
 	go func() {
-		fmt.Printf("%s⟳ thinking...%s\n", dim, reset)
+		outPrintf("%s⟳ thinking...%s\n", dim, reset)
 		m.runAgentTurn(turnCtx, turnCancel)
 	}()
 
@@ -580,9 +595,9 @@ func (m *uiModel) runAgentTurn(ctx context.Context, cancel context.CancelFunc) {
 	// Print stats/errors through pipe (same stdout as agent output) so ordering is correct
 	if err != nil {
 		if interrupted {
-			fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
+			errPrintf("\n%s↩ Interrupted%s\n", yellow, reset)
 		} else {
-			fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, err, reset)
+			errPrintf("\n%sError: %v%s\n", boldRed, err, reset)
 		}
 	} else {
 		cacheRead := m.st.totalCacheRead.Load()
@@ -616,13 +631,13 @@ func (m *uiModel) runSlashCommand(input string) {
 		if providerName == "" {
 			providerName = "unknown"
 		}
-		fmt.Printf("Switched to %s:%s\n", providerName, model)
+		outPrintf("Switched to %s:%s\n", providerName, model)
 		globalProgram.Send(modelSwitchMsg{model: model, providerKey: result.switchProvider})
 		globalProgram.Send(turnDoneMsg{})
 		return
 	}
 	if strings.HasPrefix(input, "/reasoning") && result.switchReasoning != "" {
-		fmt.Printf("Reasoning effort: %s\n", result.switchReasoning)
+		outPrintf("Reasoning effort: %s\n", result.switchReasoning)
 		globalProgram.Send(modelSwitchMsg{reasoningEffort: result.switchReasoning})
 		globalProgram.Send(turnDoneMsg{})
 		return
@@ -655,7 +670,7 @@ func (m *uiModel) runSlashCommand(input string) {
 				saveActiveProvider(m.wsDir, resolved.Key)
 			}
 			turns := countUserTurns(m.session.Messages)
-			fmt.Printf("Resumed: %s (%d turns)\n\n", m.session.Title, turns)
+			outPrintf("Resumed: %s (%d turns)\n\n", m.session.Title, turns)
 			printSessionHistory(m.session.Messages)
 		}
 	}
@@ -956,50 +971,6 @@ func (m uiModel) View() string {
 	return b.String()
 }
 
-// --- stdout pipe relay ---
-//
-// Reads from the pipe in a goroutine. Complete lines are printed above the
-// TUI via program.Println() (safe from goroutines, NOT from Update handlers).
-// Partial lines are buffered until a newline arrives.
-
-func startOutputRelay(pr *os.File, p *tea.Program) {
-	var lineBuf strings.Builder
-	buf := make([]byte, 4096)
-	for {
-		n, err := pr.Read(buf)
-		if n > 0 {
-			chunk := string(buf[:n])
-			// Filter control chars that break bubbletea
-			chunk = strings.ReplaceAll(chunk, "\r", "")
-			chunk = strings.ReplaceAll(chunk, "\033[K", "")
-			chunk = strings.ReplaceAll(chunk, "\033[2K", "")
-
-			lineBuf.WriteString(chunk)
-			content := lineBuf.String()
-
-			// Print all complete lines
-			lastNL := strings.LastIndex(content, "\n")
-			if lastNL >= 0 {
-				lines := strings.Split(content[:lastNL], "\n")
-				for _, line := range lines {
-					p.Println(line)
-				}
-				lineBuf.Reset()
-				if lastNL+1 < len(content) {
-					lineBuf.WriteString(content[lastNL+1:])
-				}
-			}
-		}
-		if err != nil {
-			// Flush remaining
-			if lineBuf.Len() > 0 {
-				p.Println(lineBuf.String())
-			}
-			return
-		}
-	}
-}
-
 func stripANSI(s string) string {
 	var b strings.Builder
 	inEsc := false
@@ -1029,26 +1000,22 @@ func RunInteractive(
 	m := newUIModel(session, provider, system, tools, executor, bgManager,
 		st, projectDir, wsDir, modelName, maxTokens, reasoningEffort)
 
-	// Print welcome to real stdout before hijacking (stays in scroll history)
+	// Print welcome to real stdout before TUI starts (stays in scroll history)
 	if m.output.Len() > 0 {
 		fmt.Print(m.output.String())
 		m.output.Reset()
 	}
 
-	// Hijack stdout/stderr → pipe → program.Println (in relay goroutine)
-	origStdout := os.Stdout
-	origStderr := os.Stderr
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pipe error: %v\n", err)
-		return
-	}
-	os.Stdout = pw
-	os.Stderr = pw
-
-	// Create program writing to original stdout
-	p := tea.NewProgram(m, tea.WithOutput(origStdout))
+	p := tea.NewProgram(m, tea.WithOutput(os.Stdout))
 	globalProgram = p
+	uiWriter := newLineBufferedProgramWriter(p)
+	restoreWriters := setOutputWriters(uiWriter, uiWriter)
+	defer func() {
+		uiWriter.Flush()
+		restoreWriters()
+		globalProgram = nil
+		setGlobalInteract(nil)
+	}()
 
 	// Set global interact function — tools/commands use this
 	setGlobalInteract(func(req interactRequest) string {
@@ -1056,20 +1023,7 @@ func RunInteractive(
 		return <-req.Response
 	})
 
-	// Relay pipe output to bubbletea
-	go startOutputRelay(pr, p)
-
 	if _, err := p.Run(); err != nil {
-		os.Stdout = origStdout
-		os.Stderr = origStderr
-		fmt.Fprintf(os.Stderr, "UI error: %v\n", err)
+		errPrintf("UI error: %v\n", err)
 	}
-
-	// Cleanup
-	globalProgram = nil
-	setGlobalInteract(nil)
-	pw.Close()
-	pr.Close()
-	os.Stdout = origStdout
-	os.Stderr = origStderr
 }

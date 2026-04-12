@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -47,7 +46,7 @@ func (r *TermRenderer) Flush() {
 	}
 	r.flushTable()
 	if r.inCodeBlock {
-		fmt.Printf("%s└─%s\n", dim, reset)
+		outPrintf("%s└─%s\n", dim, reset)
 		r.inCodeBlock = false
 	}
 }
@@ -57,7 +56,7 @@ func (r *TermRenderer) processLine(line string) {
 	if strings.HasPrefix(line, "```") {
 		r.flushTable()
 		if r.inCodeBlock {
-			fmt.Printf("%s└─%s\n", dim, reset)
+			outPrintf("%s└─%s\n", dim, reset)
 			r.inCodeBlock = false
 		} else {
 			r.inCodeBlock = true
@@ -66,14 +65,14 @@ func (r *TermRenderer) processLine(line string) {
 			if label == "" {
 				label = "code"
 			}
-			fmt.Printf("%s┌─ %s%s\n", dim, label, reset)
+			outPrintf("%s┌─ %s%s\n", dim, label, reset)
 		}
 		return
 	}
 
 	// Inside code block
 	if r.inCodeBlock {
-		fmt.Printf("%s│%s %s\n", dim, reset, line)
+		outPrintf("%s│%s %s\n", dim, reset, line)
 		return
 	}
 
@@ -88,44 +87,44 @@ func (r *TermRenderer) processLine(line string) {
 
 	// Headers
 	if strings.HasPrefix(line, "# ") {
-		fmt.Printf("\n%s%s%s\n", bold, strings.TrimPrefix(line, "# "), reset)
+		outPrintf("\n%s%s%s\n", bold, strings.TrimPrefix(line, "# "), reset)
 		return
 	}
 	if strings.HasPrefix(line, "## ") {
-		fmt.Printf("\n%s%s%s\n", bold, strings.TrimPrefix(line, "## "), reset)
+		outPrintf("\n%s%s%s\n", bold, strings.TrimPrefix(line, "## "), reset)
 		return
 	}
 	if strings.HasPrefix(line, "### ") {
-		fmt.Printf("%s%s%s\n", bold, strings.TrimPrefix(line, "### "), reset)
+		outPrintf("%s%s%s\n", bold, strings.TrimPrefix(line, "### "), reset)
 		return
 	}
 
 	// Unordered list
 	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
-		fmt.Printf("  • %s\n", renderInline(line[2:]))
+		outPrintf("  • %s\n", renderInline(line[2:]))
 		return
 	}
 	// Indented list
 	if strings.HasPrefix(line, "  - ") || strings.HasPrefix(line, "  * ") {
-		fmt.Printf("    ◦ %s\n", renderInline(line[4:]))
+		outPrintf("    ◦ %s\n", renderInline(line[4:]))
 		return
 	}
 
 	// Numbered list — keep as-is but render inline
 	if matched, _ := regexp.MatchString(`^\d+\. `, line); matched {
-		fmt.Printf("  %s\n", renderInline(line))
+		outPrintf("  %s\n", renderInline(line))
 		return
 	}
 
 	// Horizontal rule
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-		fmt.Printf("%s────────────────────────────────%s\n", dim, reset)
+		outPrintf("%s────────────────────────────────%s\n", dim, reset)
 		return
 	}
 
 	// Regular text
-	fmt.Printf("%s\n", renderInline(line))
+	outPrintf("%s\n", renderInline(line))
 }
 
 // flushTable renders a buffered table with aligned columns.
@@ -185,17 +184,17 @@ func (r *TermRenderer) flushTable() {
 	}
 
 	// Top border
-	fmt.Printf("  %s┌", dim)
+	outPrintf("  %s┌", dim)
 	for i, w := range widths {
-		fmt.Print(strings.Repeat("─", w+2))
+		outPrint(strings.Repeat("─", w+2))
 		if i < len(widths)-1 {
-			fmt.Print("┬")
+			outPrint("┬")
 		}
 	}
-	fmt.Printf("┐%s\n", reset)
+	outPrintf("┐%s\n", reset)
 
 	for rowIdx, row := range rows {
-		fmt.Printf("  %s│%s", dim, reset)
+		outPrintf("  %s│%s", dim, reset)
 		for i := 0; i < numCols; i++ {
 			cell := ""
 			if i < len(row) {
@@ -209,36 +208,36 @@ func (r *TermRenderer) flushTable() {
 			pad := widths[i] - w
 			if rowIdx == 0 && separatorIdx > 0 {
 				// Header row — bold
-				fmt.Printf(" %s%s%s%s", bold, cell, reset, strings.Repeat(" ", pad))
+				outPrintf(" %s%s%s%s", bold, cell, reset, strings.Repeat(" ", pad))
 			} else {
-				fmt.Printf(" %s%s", cell, strings.Repeat(" ", pad))
+				outPrintf(" %s%s", cell, strings.Repeat(" ", pad))
 			}
-			fmt.Printf(" %s│%s", dim, reset)
+			outPrintf(" %s│%s", dim, reset)
 		}
-		fmt.Println()
+		outPrintln()
 
 		// Separator after header
 		if rowIdx == 0 && separatorIdx > 0 {
-			fmt.Printf("  %s├", dim)
+			outPrintf("  %s├", dim)
 			for i, w := range widths {
-				fmt.Print(strings.Repeat("─", w+2))
+				outPrint(strings.Repeat("─", w+2))
 				if i < len(widths)-1 {
-					fmt.Print("┼")
+					outPrint("┼")
 				}
 			}
-			fmt.Printf("┤%s\n", reset)
+			outPrintf("┤%s\n", reset)
 		}
 	}
 
 	// Bottom border
-	fmt.Printf("  %s└", dim)
+	outPrintf("  %s└", dim)
 	for i, w := range widths {
-		fmt.Print(strings.Repeat("─", w+2))
+		outPrint(strings.Repeat("─", w+2))
 		if i < len(widths)-1 {
-			fmt.Print("┴")
+			outPrint("┴")
 		}
 	}
-	fmt.Printf("┘%s\n", reset)
+	outPrintf("┘%s\n", reset)
 
 	r.tableBuf = nil
 }

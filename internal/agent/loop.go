@@ -57,8 +57,8 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // Main is the entry point for `yu agent-loop`. Must be called inside a sandbox.
 func Main() {
 	if os.Getenv("YU_SANDBOX") != "1" {
-		fmt.Fprintln(os.Stderr, "yu agent-loop must be run inside a yu sandbox.")
-		fmt.Fprintln(os.Stderr, "Use: yu agent")
+		errPrintln("yu agent-loop must be run inside a yu sandbox.")
+		errPrintln("Use: yu agent")
 		os.Exit(1)
 	}
 
@@ -84,7 +84,7 @@ func Main() {
 		if p.ExitCode != 0 {
 			status = fmt.Sprintf("failed (exit %d)", p.ExitCode)
 		}
-		fmt.Printf("\n%s[bg #%d %s] %s%s\n", dim, p.ID, status, truncCmd(p.Command, 40), reset)
+		outPrintf("\n%s[bg #%d %s] %s%s\n", dim, p.ID, status, truncCmd(p.Command, 40), reset)
 	})
 
 	executor := &ToolExecutor{
@@ -116,7 +116,7 @@ func Main() {
 	} else if sid := os.Getenv("YU_SESSION"); sid != "" {
 		loaded, err := LoadSession(wsDir, sid)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Session %s not found, starting new\n", sid)
+			errPrintf("Session %s not found, starting new\n", sid)
 			session = NewSession(model)
 		} else {
 			session = loaded
@@ -146,9 +146,9 @@ func Main() {
 	}
 	resolvedProvider, ok := detectProviderConfig(model, providerKey)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "No API key found.")
-		fmt.Fprintln(os.Stderr, "Set ANTHROPIC_AUTH_TOKEN or OPENAI_API_KEY in your shell environment,")
-		fmt.Fprintln(os.Stderr, "or add it to your .yu/env file (yu config set ANTHROPIC_AUTH_TOKEN sk-ant-...)")
+		errPrintln("No API key found.")
+		errPrintln("Set ANTHROPIC_AUTH_TOKEN or OPENAI_API_KEY in your shell environment,")
+		errPrintln("or add it to your .yu/env file (yu config set ANTHROPIC_AUTH_TOKEN sk-ant-...)")
 		os.Exit(1)
 	}
 	activeProvider = &resolvedProvider
@@ -180,10 +180,10 @@ func Main() {
 		execCtx := context.Background()
 		_, err := agentTurn(execCtx, provider, system, &session.Messages, tools, executor, &st)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			errPrintf("Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println()
+		outPrintln()
 		st.turns.Add(1)
 		syncStats(&st, session, wsDir)
 		bgManager.StopAll()
@@ -233,7 +233,7 @@ func expandAtFiles(input, projectDir string) (display string, expanded string) {
 // --- Welcome & History ---
 
 func printWelcome(model, projectDir string, session *Session) {
-	fmt.Println()
+	outPrintln()
 
 	// ASCII art boy + logo
 	logo := []string{
@@ -243,9 +243,9 @@ func printWelcome(model, projectDir string, session *Session) {
 		`   / \      `,
 	}
 	for _, line := range logo {
-		fmt.Println(line)
+		outPrintln(line)
 	}
-	fmt.Println()
+	outPrintln()
 
 	// Info box
 	home, _ := os.UserHomeDir()
@@ -273,23 +273,23 @@ func printWelcome(model, projectDir string, session *Session) {
 	}
 	maxW += 2
 
-	fmt.Printf("  %s╭%s╮%s\n", dim, strings.Repeat("─", maxW), reset)
+	outPrintf("  %s╭%s╮%s\n", dim, strings.Repeat("─", maxW), reset)
 	for _, line := range info {
 		pad := maxW - len(line)
 		if pad < 0 {
 			pad = 0
 		}
-		fmt.Printf("  %s│%s%s%s%s│%s\n", dim, reset, line, strings.Repeat(" ", pad), dim, reset)
+		outPrintf("  %s│%s%s%s%s│%s\n", dim, reset, line, strings.Repeat(" ", pad), dim, reset)
 	}
-	fmt.Printf("  %s╰%s╯%s\n", dim, strings.Repeat("─", maxW), reset)
+	outPrintf("  %s╰%s╯%s\n", dim, strings.Repeat("─", maxW), reset)
 
 	if len(session.Messages) > 0 {
-		fmt.Println()
+		outPrintln()
 		printSessionHistory(session.Messages)
 	} else {
-		fmt.Printf("\n  %sType /help for commands • Ctrl+J newline • Ctrl+G editor%s\n", dim, reset)
+		outPrintf("\n  %sType /help for commands • Ctrl+J newline • Ctrl+G editor%s\n", dim, reset)
 	}
-	fmt.Println()
+	outPrintln()
 }
 
 func printSessionHistory(messages []Message) {
@@ -310,7 +310,7 @@ func printSessionHistory(messages []Message) {
 		case "user":
 			for _, b := range m.Content {
 				if b.Type == "text" {
-					fmt.Printf("%syu>%s %s\n\n", boldGreen, reset, b.Text)
+					outPrintf("%syu>%s %s\n\n", boldGreen, reset, b.Text)
 				}
 				// tool_result blocks are printed inline with their tool_use below
 			}
@@ -330,12 +330,12 @@ func printSessionHistory(messages []Message) {
 					}
 				}
 				renderer.Flush()
-				fmt.Println()
+				outPrintln()
 			}
 			// Print tool calls + their results
 			for _, b := range m.Content {
 				if b.Type == "tool_use" {
-					fmt.Println()
+					outPrintln()
 					printToolCall(b)
 					if result, ok := resultByID[b.ID]; ok {
 						printToolResult(b.Name, result)
@@ -344,7 +344,7 @@ func printSessionHistory(messages []Message) {
 			}
 		}
 	}
-	fmt.Printf("\n%s─── end of history ───%s\n\n", dim, reset)
+	outPrintf("\n%s─── end of history ───%s\n\n", dim, reset)
 }
 
 func truncateHistory(s string, maxLen int) string {
@@ -363,7 +363,7 @@ func printTurnStats(tokens int64, cacheRead int64, elapsed time.Duration) {
 	if cacheRead > 0 {
 		cache = fmt.Sprintf("  cached:%s", formatTokens(cacheRead))
 	}
-	fmt.Printf("\n  %s%s  %s%s  %s  %s%s\n",
+	outPrintf("\n  %s%s  %s%s  %s  %s%s\n",
 		dim, emoji, formatTokens(tokens), cache, formatDuration(elapsed), now, reset)
 }
 
@@ -424,7 +424,7 @@ func agentTurn(ctx context.Context, provider Provider, system []SystemBlock, mes
 		}
 
 		// Display tool calls with visual separation
-		fmt.Println()
+		outPrintln()
 		for _, tc := range toolCalls {
 			printToolCall(tc)
 		}
@@ -476,7 +476,7 @@ func printToolCall(tc ContentBlock) {
 		icon = "?"
 	}
 
-	fmt.Printf("  %s%s %s%s %s%s%s\n", cyan, icon, name, reset, dim, preview, reset)
+	outPrintf("  %s%s %s%s %s%s%s\n", cyan, icon, name, reset, dim, preview, reset)
 }
 
 func printToolResult(name string, result ContentBlock) {
@@ -498,11 +498,11 @@ func printToolResult(name string, result ContentBlock) {
 	}
 
 	if result.IsError {
-		fmt.Printf("  %s✗ %s%s\n", red, preview, reset)
+		outPrintf("  %s✗ %s%s\n", red, preview, reset)
 	} else {
 		// Indent tool output
 		indented := "    " + strings.ReplaceAll(preview, "\n", "\n    ")
-		fmt.Printf("%s%s%s\n", dim, indented, reset)
+		outPrintf("%s%s%s\n", dim, indented, reset)
 	}
 }
 
@@ -703,9 +703,9 @@ func processStream(ch <-chan StreamEvent, spinner *spinnerState) (*streamRespons
 
 func promptForResume(latest *Session) bool {
 	turns := countUserTurns(latest.Messages)
-	fmt.Printf("  Recent session: %s%s%s (%d turns, %s)\n",
+	outPrintf("  Recent session: %s%s%s (%d turns, %s)\n",
 		bold, latest.Title, reset, turns, formatAge(latest.UpdatedAt))
-	fmt.Printf("  Resume? [Y/n]: ")
+	outPrintf("  Resume? [Y/n]: ")
 	var answer string
 	fmt.Scanln(&answer)
 	answer = strings.TrimSpace(strings.ToLower(answer))
@@ -787,19 +787,19 @@ func execDirectCommand(command, projectDir string) string {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		msg := fmt.Sprintf("error: %v", err)
-		fmt.Println(msg)
+		outPrintln(msg)
 		return msg
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		msg := fmt.Sprintf("error: %v", err)
-		fmt.Println(msg)
+		outPrintln(msg)
 		return msg
 	}
 
 	if err := cmd.Start(); err != nil {
 		msg := fmt.Sprintf("error: %v", err)
-		fmt.Println(msg)
+		outPrintln(msg)
 		return msg
 	}
 
@@ -812,7 +812,7 @@ func execDirectCommand(command, projectDir string) string {
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Println(line)
+			outPrintln(line)
 			output.WriteString(line)
 			output.WriteByte('\n')
 		}
@@ -826,7 +826,7 @@ func execDirectCommand(command, projectDir string) string {
 	cmdErr := cmd.Wait()
 	if cmdErr != nil {
 		if exitErr, ok := cmdErr.(*exec.ExitError); ok {
-			fmt.Printf("%sExit code: %d%s\n", dim, exitErr.ExitCode(), reset)
+			outPrintf("%sExit code: %d%s\n", dim, exitErr.ExitCode(), reset)
 		}
 	}
 
@@ -841,7 +841,7 @@ func autoCompact(lastInputTokens int, session *Session, provider Provider) {
 	if len(session.Messages) < 6 {
 		return
 	}
-	fmt.Printf("\n  %s⟳ Auto-compacting context (%s input)...%s\n", yellow, formatTokens(int64(lastInputTokens)), reset)
+	outPrintf("\n  %s⟳ Auto-compacting context (%s input)...%s\n", yellow, formatTokens(int64(lastInputTokens)), reset)
 	compactConversation(session, provider)
 }
 

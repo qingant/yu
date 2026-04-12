@@ -23,7 +23,6 @@ type ToolExecutor struct {
 	ProjectDir  string
 	BashTimeout time.Duration
 	BgManager   *BgManager
-
 }
 
 // toolDefs returns all tool definitions for the API.
@@ -274,7 +273,7 @@ func (e *ToolExecutor) execBash(input json.RawMessage) (string, bool) {
 			}
 			mu.Unlock()
 			// Stream to terminal in real-time, indented
-			fmt.Printf("    \033[2m%s%s\033[0m\n", prefix, line)
+			outPrintf("    \033[2m%s%s\033[0m\n", prefix, line)
 		}
 	}
 
@@ -331,7 +330,7 @@ func (e *ToolExecutor) execPoll(input json.RawMessage) (string, bool) {
 
 	for {
 		attempt++
-		fmt.Printf("    \033[2m[poll #%d] %s\033[0m\n", attempt, args.Command)
+		outPrintf("    \033[2m[poll #%d] %s\033[0m\n", attempt, args.Command)
 
 		cmd := exec.Command("bash", "-c", args.Command)
 		cmd.Dir = e.ProjectDir
@@ -341,11 +340,11 @@ func (e *ToolExecutor) execPoll(input json.RawMessage) (string, bool) {
 		// Check success
 		if args.SuccessPattern != "" {
 			if strings.Contains(result, args.SuccessPattern) {
-				fmt.Printf("    \033[32m[poll] success on attempt #%d\033[0m\n", attempt)
+				outPrintf("    \033[32m[poll] success on attempt #%d\033[0m\n", attempt)
 				return fmt.Sprintf("Success on attempt #%d:\n%s", attempt, result), false
 			}
 		} else if err == nil {
-			fmt.Printf("    \033[32m[poll] success on attempt #%d\033[0m\n", attempt)
+			outPrintf("    \033[32m[poll] success on attempt #%d\033[0m\n", attempt)
 			return fmt.Sprintf("Success on attempt #%d:\n%s", attempt, result), false
 		}
 
@@ -354,7 +353,7 @@ func (e *ToolExecutor) execPoll(input json.RawMessage) (string, bool) {
 		if len(preview) > 200 {
 			preview = preview[:200] + "..."
 		}
-		fmt.Printf("    \033[2m[poll] not yet: %s\033[0m\n", strings.ReplaceAll(strings.TrimSpace(preview), "\n", " "))
+		outPrintf("    \033[2m[poll] not yet: %s\033[0m\n", strings.ReplaceAll(strings.TrimSpace(preview), "\n", " "))
 
 		// Check deadline
 		if time.Now().Add(time.Duration(interval) * time.Second).After(deadline) {
@@ -719,7 +718,7 @@ func (e *ToolExecutor) execAskUser(input json.RawMessage) (string, bool) {
 		return fmt.Sprintf("invalid input: %v", err), true
 	}
 
-	fmt.Printf("\n  \033[1;33m%s\033[0m\n", args.Question)
+	outPrintf("\n  \033[1;33m%s\033[0m\n", args.Question)
 
 	if len(args.Options) > 0 {
 		selected := uiSelect(args.Options)
@@ -743,11 +742,11 @@ func (e *ToolExecutor) execPlan(input json.RawMessage) (string, bool) {
 	}
 
 	// Print plan via stdout (goes through pipe to UI)
-	fmt.Printf("\n  \033[1;36m%s\033[0m\n", args.Title)
+	outPrintf("\n  \033[1;36m%s\033[0m\n", args.Title)
 	for i, step := range args.Steps {
-		fmt.Printf("  %d. %s\n", i+1, step)
+		outPrintf("  %d. %s\n", i+1, step)
 	}
-	fmt.Println()
+	outPrintln()
 
 	selected := uiSelect([]string{"Approve", "Reject", "Edit"})
 	switch selected {
@@ -798,7 +797,7 @@ func arrowSelectAt(options []string, startIdx int) string {
 		switch {
 		case n == 1 && buf[0] == 13: // Enter
 			clearLines(vl)
-			fmt.Printf("  \033[32m✓ %s\033[0m\n", options[cursor])
+			outPrintf("  \033[32m✓ %s\033[0m\n", options[cursor])
 			return options[cursor]
 
 		case n == 1 && (buf[0] == 3 || buf[0] == 'q'): // Ctrl+C or q → exit
@@ -840,9 +839,9 @@ func renderList(options []string, cursor int) {
 		// No scrolling needed
 		for i, opt := range options {
 			if i == cursor {
-				fmt.Printf("  \033[36m❯ %s\033[0m\r\n", opt)
+				outPrintf("  \033[36m❯ %s\033[0m\r\n", opt)
 			} else {
-				fmt.Printf("    %s\r\n", opt)
+				outPrintf("    %s\r\n", opt)
 			}
 		}
 		return
@@ -860,17 +859,17 @@ func renderList(options []string, cursor int) {
 	}
 
 	if start > 0 {
-		fmt.Printf("  \033[2m  ↑ %d more\033[0m\r\n", start)
+		outPrintf("  \033[2m  ↑ %d more\033[0m\r\n", start)
 	}
 	for i := start; i < end; i++ {
 		if i == cursor {
-			fmt.Printf("  \033[36m❯ %s\033[0m\r\n", options[i])
+			outPrintf("  \033[36m❯ %s\033[0m\r\n", options[i])
 		} else {
-			fmt.Printf("    %s\r\n", options[i])
+			outPrintf("    %s\r\n", options[i])
 		}
 	}
 	if end < total {
-		fmt.Printf("  \033[2m  ↓ %d more\033[0m\r\n", total-end)
+		outPrintf("  \033[2m  ↓ %d more\033[0m\r\n", total-end)
 	}
 }
 
@@ -889,15 +888,15 @@ func visibleLines(total int) int {
 
 func clearLines(n int) {
 	for i := 0; i < n; i++ {
-		fmt.Print("\033[A\033[K")
+		outPrint("\033[A\033[K")
 	}
 }
 
 func fallbackSelect(options []string) string {
 	for i, opt := range options {
-		fmt.Printf("  %d) %s\n", i+1, opt)
+		outPrintf("  %d) %s\n", i+1, opt)
 	}
-	fmt.Print("  > ")
+	outPrint("  > ")
 	reader := bufio.NewReader(os.Stdin)
 	answer, _ := reader.ReadString('\n')
 	answer = strings.TrimSpace(answer)
@@ -976,24 +975,24 @@ func printEditDiff(path, oldStr, newStr string) {
 		newEnd = len(newLines)
 	}
 
-	fmt.Printf("    %s--- %s%s\n", dim, path, reset)
-	fmt.Printf("    %s+++ %s%s\n", dim, path, reset)
+	outPrintf("    %s--- %s%s\n", dim, path, reset)
+	outPrintf("    %s+++ %s%s\n", dim, path, reset)
 
 	// Print context before
 	for i := ctxStart; i < prefix; i++ {
-		fmt.Printf("    %s %s%s\n", dim, oldLines[i], reset)
+		outPrintf("    %s %s%s\n", dim, oldLines[i], reset)
 	}
 	// Print removed lines
 	for i := prefix; i <= oldSuffix; i++ {
-		fmt.Printf("    %s-%s%s\n", red, oldLines[i], reset)
+		outPrintf("    %s-%s%s\n", red, oldLines[i], reset)
 	}
 	// Print added lines
 	for i := prefix; i <= newSuffix; i++ {
-		fmt.Printf("    %s+%s%s\n", green, newLines[i], reset)
+		outPrintf("    %s+%s%s\n", green, newLines[i], reset)
 	}
 	// Print context after
 	afterStart := oldSuffix + 1
 	for i := afterStart; i < oldEnd; i++ {
-		fmt.Printf("    %s %s%s\n", dim, oldLines[i], reset)
+		outPrintf("    %s %s%s\n", dim, oldLines[i], reset)
 	}
 }

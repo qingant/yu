@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -72,7 +71,7 @@ func uiInput(question string) string {
 	fn := getGlobalInteract()
 	if fn == nil {
 		// Fallback: direct stdin
-		fmt.Printf("  %s\n  > ", question)
+		outPrintf("  %s\n  > ", question)
 		reader := bufio.NewReader(os.Stdin)
 		answer, _ := reader.ReadString('\n')
 		return strings.TrimSpace(answer)
