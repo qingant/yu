@@ -59,6 +59,7 @@ type uiModel struct {
 	interactReq    *interactRequest
 	interactCursor int
 	interactInput  textarea.Model // for free text input
+	interactFilter string
 
 	// Business context
 	session    *Session
@@ -236,10 +237,18 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case interactMsg:
 		m.state = stateInteract
 		m.interactReq = &msg.req
-		m.interactCursor = 0
+		m.interactCursor = msg.req.StartIdx
+		m.interactFilter = ""
 		if msg.req.Options == nil {
 			m.interactInput.Reset()
 			m.interactInput.Focus()
+		} else if len(msg.req.Options) > 0 {
+			if m.interactCursor < 0 {
+				m.interactCursor = 0
+			}
+			if m.interactCursor >= len(msg.req.Options) {
+				m.interactCursor = len(msg.req.Options) - 1
+			}
 		}
 		return m, nil
 
@@ -370,13 +379,24 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	req := m.interactReq
 
 	if req.Options != nil {
+		matches := m.filteredInteractIndices()
+		if len(matches) == 0 {
+			m.interactCursor = 0
+		} else if m.interactCursor >= len(matches) {
+			m.interactCursor = len(matches) - 1
+		}
+
 		// Selection mode
 		switch msg.Type {
 		case tea.KeyEnter:
-			selected := req.Options[m.interactCursor]
+			if len(matches) == 0 {
+				return m, nil
+			}
+			selected := req.Options[matches[m.interactCursor]]
 			req.Response <- selected
 			m.state = stateWorking
 			m.interactReq = nil
+			m.interactFilter = ""
 			m.output.WriteString(fmt.Sprintf("  %s✓ %s%s\n", green, selected, reset))
 			return m, nil
 
@@ -384,6 +404,7 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			req.Response <- ""
 			m.state = stateWorking
 			m.interactReq = nil
+			m.interactFilter = ""
 			return m, nil
 
 		case tea.KeyUp:
@@ -393,8 +414,23 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyDown:
-			if m.interactCursor < len(req.Options)-1 {
+			if m.interactCursor < len(matches)-1 {
 				m.interactCursor++
+			}
+			return m, nil
+
+		case tea.KeyBackspace, tea.KeyCtrlH:
+			if m.interactFilter != "" {
+				r := []rune(m.interactFilter)
+				m.interactFilter = string(r[:len(r)-1])
+				m.interactCursor = 0
+			}
+			return m, nil
+
+		case tea.KeyRunes:
+			if len(msg.Runes) > 0 {
+				m.interactFilter += string(msg.Runes)
+				m.interactCursor = 0
 			}
 			return m, nil
 		}
@@ -420,6 +456,33 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.interactInput, cmd = m.interactInput.Update(msg)
 	return m, cmd
+}
+
+func (m uiModel) filteredInteractIndices() []int {
+	if m.interactReq == nil || m.interactReq.Options == nil {
+		return nil
+	}
+	if m.interactFilter == "" {
+		indices := make([]int, len(m.interactReq.Options))
+		for i := range m.interactReq.Options {
+			indices[i] = i
+		}
+		return indices
+	}
+
+	filter := strings.ToLower(m.interactFilter)
+	var prefix []int
+	var contains []int
+	for i, opt := range m.interactReq.Options {
+		label := strings.ToLower(stripANSI(opt))
+		switch {
+		case strings.HasPrefix(label, filter):
+			prefix = append(prefix, i)
+		case strings.Contains(label, filter):
+			contains = append(contains, i)
+		}
+	}
+	return append(prefix, contains...)
 }
 
 func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
@@ -728,12 +791,56 @@ func (m uiModel) View() string {
 				b.WriteString(fmt.Sprintf("\n  %s%s%s\n", bold, m.interactReq.Question, reset))
 			}
 			if m.interactReq.Options != nil {
-				for i, opt := range m.interactReq.Options {
+				matches := m.filteredInteractIndices()
+				filterLabel := m.interactFilter
+				if filterLabel == "" {
+					filterLabel = dim + "type to filter" + reset
+				}
+				b.WriteString(fmt.Sprintf("  %sFilter:%s %s\n", dim, reset, filterLabel))
+
+				if len(matches) == 0 {
+					b.WriteString(fmt.Sprintf("  %s(no matches)%s\n", dim, reset))
+					break
+				}
+
+				maxVisible := 8
+				if m.height > 0 {
+					if available := m.height - 10; available > 3 && available < maxVisible {
+						maxVisible = available
+					}
+				}
+				if maxVisible < 3 {
+					maxVisible = 3
+				}
+
+				start := 0
+				if len(matches) > maxVisible {
+					start = m.interactCursor - maxVisible/2
+					if start < 0 {
+						start = 0
+					}
+					if end := start + maxVisible; end > len(matches) {
+						start = len(matches) - maxVisible
+					}
+				}
+				end := start + maxVisible
+				if end > len(matches) {
+					end = len(matches)
+				}
+
+				if start > 0 {
+					b.WriteString(fmt.Sprintf("  %s↑ %d more%s\n", dim, start, reset))
+				}
+				for i := start; i < end; i++ {
+					opt := m.interactReq.Options[matches[i]]
 					if i == m.interactCursor {
 						b.WriteString(fmt.Sprintf("  %s❯ %s%s\n", cyan, opt, reset))
 					} else {
 						b.WriteString(fmt.Sprintf("    %s\n", opt))
 					}
+				}
+				if end < len(matches) {
+					b.WriteString(fmt.Sprintf("  %s↓ %d more%s\n", dim, len(matches)-end, reset))
 				}
 			} else {
 				b.WriteString(m.interactInput.View())
@@ -796,6 +903,25 @@ func startOutputRelay(pr *os.File, p *tea.Program) {
 			return
 		}
 	}
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == '\033' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // --- Entry point ---

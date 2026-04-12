@@ -2,9 +2,6 @@ module github.com/taoai/yu
 
 go 1.26.1
 
-replace github.com/charmbracelet/bubbletea => ./third_party/bubbletea
-replace github.com/charmbracelet/bubbles => ./third_party/bubbles
-
 require (
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1

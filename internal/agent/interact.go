@@ -12,6 +12,7 @@ import (
 type interactRequest struct {
 	Question string   // text to display
 	Options  []string // nil = free text input, non-nil = selection
+	StartIdx int
 	Response chan string
 }
 
@@ -47,6 +48,7 @@ func uiSelect(options []string) string {
 	return fn(interactRequest{
 		Question: "",
 		Options:  options,
+		StartIdx: 0,
 		Response: make(chan string, 1),
 	})
 }
@@ -57,10 +59,10 @@ func uiSelectAt(options []string, startIdx int) string {
 	if fn == nil {
 		return arrowSelectAt(options, startIdx)
 	}
-	// TUI doesn't support startIdx, just use options
 	return fn(interactRequest{
 		Question: "",
 		Options:  options,
+		StartIdx: startIdx,
 		Response: make(chan string, 1),
 	})
 }
