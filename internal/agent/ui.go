@@ -32,6 +32,7 @@ type agentTurnCmd struct {
 	tools    []ToolDef
 	executor *ToolExecutor
 	st       *stats
+	userInput string // displayed before turn starts
 
 	// Results
 	lastInput   int
@@ -58,12 +59,8 @@ func (c *agentTurnCmd) Run() error {
 		os.Stdout = f
 	}
 
-	// Listen for ESC/Ctrl+C in a goroutine (terminal is in cooked mode,
-	// but bubbletea released it — we can read raw if we set raw mode)
-	// Actually: bubbletea restores the original terminal state. If we want
-	// ESC to cancel, we need raw mode. But ask_user tool also reads stdin.
-	// For now, Ctrl+C generates SIGINT which the sandbox ignores (v1.0.53),
-	// and the agent's signal handler will catch it. This is good enough.
+	// Show user input
+	fmt.Printf("\n%s%s%s %s\n\n", boldGreen, "yu>", reset, c.userInput)
 
 	turnStart := time.Now()
 	c.lastInput, c.err = agentTurn(c.ctx, c.provider, c.system, c.messages, c.tools, c.executor, c.st)
@@ -113,12 +110,14 @@ func newUIModel(
 	ctx context.Context,
 ) uiModel {
 	ta := textarea.New()
-	ta.Placeholder = "Message... (Enter send, Shift+Enter newline, /help)"
+	ta.Placeholder = "Message... (Ctrl+D send, Enter newline, /help)"
 	ta.Focus()
 	ta.CharLimit = 0
 	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetKeys("shift+enter", "ctrl+j")
+	// Enter inserts newline (default textarea behavior).
+	// Ctrl+D submits the input.
+	ta.KeyMap.InsertNewline.SetKeys("enter")
 
 	return uiModel{
 		textarea:   ta,
@@ -161,12 +160,13 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlG:
 			return m, m.openEditor(m.textarea.Value())
 
-		case tea.KeyEnter:
+		case tea.KeyCtrlD:
 			text := strings.TrimSpace(m.textarea.Value())
 			if text == "" {
 				return m, nil
 			}
 			m.textarea.Reset()
+			m.textarea.SetHeight(2)
 			return m.submit(text)
 		}
 
@@ -189,6 +189,18 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+
+	// Auto-grow textarea height based on content lines
+	lines := strings.Count(m.textarea.Value(), "\n") + 1
+	h := lines + 1 // +1 for cursor room
+	if h < 2 {
+		h = 2
+	}
+	if h > 12 {
+		h = 12
+	}
+	m.textarea.SetHeight(h)
+
 	return m, cmd
 }
 
@@ -237,6 +249,7 @@ func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 		provider: m.provider, system: m.system,
 		messages: &m.session.Messages, tools: m.tools,
 		executor: m.executor, st: m.st,
+		userInput: input,
 	}
 
 	return *m, tea.Exec(cmd, func(err error) tea.Msg {
@@ -338,6 +351,8 @@ func (c *slashCmd) Run() error {
 		os.Stdout = f
 	}
 
+	fmt.Printf("\n%s%s%s %s\n\n", boldGreen, "yu>", reset, c.input)
+
 	result := handleSlashCommand(c.input, c.session, c.projectDir, c.wsDir, c.provider, c.bgManager, c.st)
 	if result.newSession {
 		*c.session = *NewSession(c.modelName)
@@ -397,6 +412,9 @@ func (c *shellExecCmd) Run() error {
 	if f, ok := c.stdout.(*os.File); ok {
 		os.Stdout = f
 	}
+
+	fmt.Printf("\n%s%s%s !%s\n\n", boldGreen, "yu>", reset, c.shellCmd)
+
 	output := execDirectCommand(c.shellCmd, c.projectDir)
 	c.session.Messages = append(c.session.Messages, Message{
 		Role: "user",
