@@ -110,14 +110,13 @@ func newUIModel(
 	ctx context.Context,
 ) uiModel {
 	ta := textarea.New()
-	ta.Placeholder = "Message... (Ctrl+D send, Enter newline, /help)"
+	ta.Placeholder = "Message... (Enter send, Ctrl+J newline, /help)"
 	ta.Focus()
 	ta.CharLimit = 0
 	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
-	// Enter inserts newline (default textarea behavior).
-	// Ctrl+D submits the input.
-	ta.KeyMap.InsertNewline.SetKeys("enter")
+	// Enter submits. Ctrl+J inserts newline.
+	ta.KeyMap.InsertNewline.SetKeys("ctrl+j")
 
 	return uiModel{
 		textarea:   ta,
@@ -157,10 +156,13 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			return m, nil
 
+		case tea.KeyTab:
+			return m.completeSlashCmd()
+
 		case tea.KeyCtrlG:
 			return m, m.openEditor(m.textarea.Value())
 
-		case tea.KeyCtrlD:
+		case tea.KeyEnter:
 			text := strings.TrimSpace(m.textarea.Value())
 			if text == "" {
 				return m, nil
@@ -280,6 +282,38 @@ func (m *uiModel) handleTurnDone(msg turnDoneMsg) {
 	}
 	syncStats(m.st, m.session, m.wsDir)
 	autoCompact(msg.lastInput, m.session, m.provider)
+}
+
+func (m uiModel) completeSlashCmd() (tea.Model, tea.Cmd) {
+	text := m.textarea.Value()
+	if !strings.HasPrefix(text, "/") {
+		return m, nil
+	}
+	// Find matching commands
+	var matches []string
+	for _, cmd := range slashCommands {
+		if strings.HasPrefix(cmd, text) {
+			matches = append(matches, cmd)
+		}
+	}
+	if len(matches) == 1 {
+		m.textarea.SetValue(matches[0] + " ")
+		// Move cursor to end
+		m.textarea.CursorEnd()
+	} else if len(matches) > 1 {
+		// Find common prefix
+		prefix := matches[0]
+		for _, m := range matches[1:] {
+			for !strings.HasPrefix(m, prefix) {
+				prefix = prefix[:len(prefix)-1]
+			}
+		}
+		if len(prefix) > len(text) {
+			m.textarea.SetValue(prefix)
+			m.textarea.CursorEnd()
+		}
+	}
+	return m, nil
 }
 
 func (m uiModel) openEditor(prefill string) tea.Cmd {
