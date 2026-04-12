@@ -29,6 +29,13 @@ func (c *platformCloner) Clone(src, dst string) error {
 	if isGitRepo(src) {
 		return c.cloneGitFiles(src, dst)
 	}
+
+	// For non-git dirs, bail if too large (e.g. home directory).
+	entries, err := os.ReadDir(src)
+	if err == nil && len(entries) > 200 {
+		return fmt.Errorf("too many entries (%d) for non-git snapshot, skipping", len(entries))
+	}
+
 	return c.cloneDir(src, dst)
 }
 

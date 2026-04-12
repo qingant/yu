@@ -22,6 +22,17 @@ func ScanAndPrompt(projectDir string, thresholdMB int, existingExcludes []string
 		return nil
 	}
 
+	// Skip scanning if projectDir looks like a home directory or has too many
+	// top-level entries — walking millions of files would hang.
+	home, _ := os.UserHomeDir()
+	if projectDir == home {
+		return nil
+	}
+	entries, err := os.ReadDir(projectDir)
+	if err == nil && len(entries) > 200 {
+		return nil
+	}
+
 	excluded := buildExcludeSet(projectDir, existingExcludes)
 	large := findLargeDirs(projectDir, projectDir, excluded, int64(thresholdMB), 0, 3)
 
