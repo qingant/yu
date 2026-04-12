@@ -1,106 +1,80 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// --- agentTurnCmd wraps agentTurn as a tea.ExecCommand ---
+// --- Approach ---
 //
-// When bubbletea receives this via tea.Exec, it:
-//  1. Releases the terminal (restores cooked mode, stops reading stdin)
-//  2. Calls Run() — which runs agentTurn with direct stdin/stdout
-//  3. Restores the terminal (raw mode, resumes TUI)
-//
-// This means agentTurn's fmt.Printf, spinner, tool output, ask_user stdin
-// reads all work exactly as before. Zero changes to existing code.
+// stdout is hijacked to an os.Pipe before bubbletea starts.
+// A background goroutine reads from the pipe and sends outputMsg to bubbletea
+// via program.Send() (non-blocking, no deadlock).
+// agentTurn runs in a plain goroutine (not tea.Cmd), writing to the hijacked
+// stdout as usual. bubbletea's View always shows the output + input area.
 
-type agentTurnCmd struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	provider Provider
-	system   []SystemBlock
-	messages *[]Message
-	tools    []ToolDef
-	executor *ToolExecutor
-	st       *stats
-	userInput string // displayed before turn starts
+// --- Messages ---
 
-	// Results
-	lastInput   int
-	elapsed     time.Duration
-	err         error
-	interrupted bool
-
-	// stdin/stdout/stderr set by bubbletea
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
-}
-
-func (c *agentTurnCmd) SetStdin(r io.Reader)  { c.stdin = r }
-func (c *agentTurnCmd) SetStdout(w io.Writer)  { c.stdout = w }
-func (c *agentTurnCmd) SetStderr(w io.Writer)  { c.stderr = w }
-
-func (c *agentTurnCmd) Run() error {
-	// Restore os.Stdin/Stdout so fmt.Printf and bufio.Scanner work
-	if f, ok := c.stdin.(*os.File); ok {
-		os.Stdin = f
+type (
+	outputMsg    string // a line of output from stdout pipe
+	turnDoneMsg  struct {
+		lastInput   int
+		elapsed     time.Duration
+		err         error
+		interrupted bool
 	}
-	if f, ok := c.stdout.(*os.File); ok {
-		os.Stdout = f
-	}
-
-	// Show user input
-	fmt.Printf("\n%s%s%s %s\n\n", boldGreen, "yu>", reset, c.userInput)
-
-	turnStart := time.Now()
-	c.lastInput, c.err = agentTurn(c.ctx, c.provider, c.system, c.messages, c.tools, c.executor, c.st)
-	c.elapsed = time.Since(turnStart)
-	c.interrupted = c.ctx.Err() != nil
-	return nil // always return nil — we handle errors in the callback
-}
-
-// --- Tea messages ---
-
-type turnDoneMsg struct {
-	lastInput   int
-	elapsed     time.Duration
-	err         error
-	interrupted bool
-}
-
-type editorResultMsg struct{ text string }
-type editorErrMsg struct{ err error }
+	slashDoneMsg   struct{}
+	editorResultMsg struct{ text string }
+	editorErrMsg    struct{ err error }
+)
 
 // --- Model ---
 
+type appState int
+
+const (
+	stateIdle appState = iota
+	stateWorking
+)
+
 type uiModel struct {
 	textarea  textarea.Model
-	modelName string
-	bgCount   int
+	spinner   spinner.Model
+	state     appState
+	output    strings.Builder // accumulated output lines
 	width     int
+	height    int
+
+	// Turn cancellation
+	turnCancel context.CancelFunc
 
 	// Business context
-	session   *Session
-	provider  Provider
-	system    []SystemBlock
-	tools     []ToolDef
-	executor  *ToolExecutor
-	bgManager *BgManager
-	st        *stats
+	session    *Session
+	provider   Provider
+	system     []SystemBlock
+	tools      []ToolDef
+	executor   *ToolExecutor
+	bgManager  *BgManager
+	st         *stats
 	projectDir string
 	wsDir      string
+	modelName  string
 	maxTokens  int
 	ctx        context.Context
+
+	// stdout pipe (for cleanup)
+	pipeWriter  *os.File
+	origStdout  *os.File
+	program     *tea.Program
 }
 
 func newUIModel(
@@ -115,12 +89,15 @@ func newUIModel(
 	ta.CharLimit = 0
 	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
-	// Enter submits. Ctrl+J inserts newline.
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+j")
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
 
 	return uiModel{
 		textarea:   ta,
-		modelName:  modelName,
+		spinner:    sp,
+		state:      stateIdle,
 		session:    session,
 		provider:   provider,
 		system:     system,
@@ -130,52 +107,68 @@ func newUIModel(
 		st:         st,
 		projectDir: projectDir,
 		wsDir:      wsDir,
+		modelName:  modelName,
 		maxTokens:  maxTokens,
 		ctx:        ctx,
 	}
 }
 
 func (m uiModel) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(textarea.Blink, m.spinner.Tick)
 }
 
 func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		m.textarea.SetWidth(msg.Width)
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
-			m.bgManager.StopAll()
-			return m, tea.Quit
+		return m.handleKey(msg)
 
-		case tea.KeyEsc:
-			m.textarea.Reset()
-			return m, nil
-
-		case tea.KeyTab:
-			return m.completeSlashCmd()
-
-		case tea.KeyCtrlG:
-			return m, m.openEditor(m.textarea.Value())
-
-		case tea.KeyEnter:
-			text := strings.TrimSpace(m.textarea.Value())
-			if text == "" {
-				return m, nil
-			}
-			m.textarea.Reset()
-			m.textarea.SetHeight(2)
-			return m.submit(text)
+	case spinner.TickMsg:
+		if m.state == stateWorking {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
 		}
+		return m, nil
+
+	case outputMsg:
+		m.output.WriteString(string(msg))
+		m.output.WriteByte('\n')
+		return m, nil
 
 	case turnDoneMsg:
-		// Agent turn finished — handle results and update state
-		m.handleTurnDone(msg)
-		m.bgCount = m.bgManager.RunningCount()
+		m.state = stateIdle
+		m.turnCancel = nil
+		if msg.err != nil {
+			if msg.interrupted {
+				m.output.WriteString(fmt.Sprintf("\n%s↩ Interrupted%s\n", yellow, reset))
+				if len(m.session.Messages) > 0 && m.session.Messages[len(m.session.Messages)-1].Role == "user" {
+					m.session.Messages = m.session.Messages[:len(m.session.Messages)-1]
+				}
+			} else {
+				m.output.WriteString(fmt.Sprintf("\n%sError: %v%s\n", boldRed, msg.err, reset))
+			}
+		} else {
+			m.st.turns.Add(1)
+			cacheRead := m.st.totalCacheRead.Load()
+			// Stats line
+			m.output.WriteString(fmt.Sprintf("\n  %s  %s  %s\n",
+				randomEmoji(),
+				formatTokens(int64(msg.lastInput)),
+				formatDuration(msg.elapsed)))
+			_ = cacheRead
+		}
+		syncStats(m.st, m.session, m.wsDir)
+		autoCompact(msg.lastInput, m.session, m.provider)
+		return m, nil
+
+	case slashDoneMsg:
+		m.state = stateIdle
 		return m, nil
 
 	case editorResultMsg:
@@ -185,39 +178,96 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorErrMsg:
-		fmt.Fprintf(os.Stderr, "Editor error: %v\n", msg.err)
+		m.output.WriteString(fmt.Sprintf("Editor error: %v\n", msg.err))
 		return m, nil
 	}
 
-	var cmd tea.Cmd
-	m.textarea, cmd = m.textarea.Update(msg)
+	// Pass to textarea when idle
+	if m.state == stateIdle {
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
 
-	// Auto-grow textarea height based on content lines
-	lines := strings.Count(m.textarea.Value(), "\n") + 1
-	h := lines + 1 // +1 for cursor room
-	if h < 2 {
-		h = 2
-	}
-	if h > 12 {
-		h = 12
-	}
-	m.textarea.SetHeight(h)
+		// Auto-grow textarea
+		lines := strings.Count(m.textarea.Value(), "\n") + 1
+		h := lines + 1
+		if h < 2 {
+			h = 2
+		}
+		if h > 12 {
+			h = 12
+		}
+		m.textarea.SetHeight(h)
 
-	return m, cmd
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		if m.state == stateWorking {
+			if m.turnCancel != nil {
+				m.turnCancel()
+			}
+			return m, nil
+		}
+		m.bgManager.StopAll()
+		return m, tea.Quit
+
+	case tea.KeyEsc:
+		if m.state == stateWorking {
+			if m.turnCancel != nil {
+				m.turnCancel()
+			}
+			return m, nil
+		}
+		m.textarea.Reset()
+		return m, nil
+
+	case tea.KeyTab:
+		if m.state == stateIdle {
+			return m.completeSlashCmd()
+		}
+		return m, nil
+
+	case tea.KeyCtrlG:
+		if m.state == stateIdle {
+			return m, m.openEditor(m.textarea.Value())
+		}
+		return m, nil
+
+	case tea.KeyEnter:
+		if m.state != stateIdle {
+			return m, nil
+		}
+		text := strings.TrimSpace(m.textarea.Value())
+		if text == "" {
+			return m, nil
+		}
+		m.textarea.Reset()
+		m.textarea.SetHeight(2)
+		return m.submit(text)
+	}
+
+	if m.state == stateIdle {
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
-	// Slash commands — run directly (they print to stdout, which is fine
-	// because tea.Exec will release terminal for the next turn)
+	// Show user input
+	m.output.WriteString(fmt.Sprintf("\n%syu>%s %s\n", boldGreen, reset, input))
+
+	// Slash commands
 	if strings.HasPrefix(input, "/") {
-		// Use tea.Exec to release terminal for slash command output
-		return *m, tea.Exec(&slashCmd{
-			input: input, session: m.session, projectDir: m.projectDir,
-			wsDir: m.wsDir, provider: m.provider, bgManager: m.bgManager,
-			st: m.st, modelName: m.modelName, maxTokens: m.maxTokens,
-		}, func(err error) tea.Msg {
-			return slashDoneMsg{}
-		})
+		m.state = stateWorking
+		go m.runSlashCommand(input)
+		return *m, nil
 	}
 
 	// !cmd
@@ -225,12 +275,8 @@ func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 		shellCmd := strings.TrimPrefix(input, "!")
 		shellCmd = strings.TrimSpace(shellCmd)
 		if shellCmd != "" {
-			return *m, tea.Exec(&shellExecCmd{
-				shellCmd: shellCmd, projectDir: m.projectDir,
-				session: m.session, wsDir: m.wsDir,
-			}, func(err error) tea.Msg {
-				return slashDoneMsg{}
-			})
+			m.state = stateWorking
+			go m.runShellCommand(shellCmd)
 		}
 		return *m, nil
 	}
@@ -244,44 +290,82 @@ func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 		},
 	})
 
-	// Start agent turn via tea.Exec — bubbletea releases terminal
+	// Start agent turn in goroutine
+	m.state = stateWorking
 	turnCtx, turnCancel := context.WithCancel(m.ctx)
-	cmd := &agentTurnCmd{
-		ctx: turnCtx, cancel: turnCancel,
-		provider: m.provider, system: m.system,
-		messages: &m.session.Messages, tools: m.tools,
-		executor: m.executor, st: m.st,
-		userInput: input,
-	}
+	m.turnCancel = turnCancel
+	go m.runAgentTurn(turnCtx, turnCancel)
 
-	return *m, tea.Exec(cmd, func(err error) tea.Msg {
-		turnCancel()
-		return turnDoneMsg{
-			lastInput:   cmd.lastInput,
-			elapsed:     cmd.elapsed,
-			err:         cmd.err,
-			interrupted: cmd.interrupted,
-		}
+	return *m, nil
+}
+
+func (m *uiModel) runAgentTurn(ctx context.Context, cancel context.CancelFunc) {
+	turnStart := time.Now()
+	lastInput, err := agentTurn(ctx, m.provider, m.system, &m.session.Messages, m.tools, m.executor, m.st)
+	elapsed := time.Since(turnStart)
+	cancel()
+
+	m.program.Send(turnDoneMsg{
+		lastInput:   lastInput,
+		elapsed:     elapsed,
+		err:         err,
+		interrupted: ctx.Err() != nil,
 	})
+}
+
+func (m *uiModel) runSlashCommand(input string) {
+	result := handleSlashCommand(input, m.session, m.projectDir, m.wsDir, m.provider, m.bgManager, m.st)
+	if result.newSession {
+		*m.session = *NewSession(m.modelName)
+		m.system = buildSystemPrompt(m.projectDir, findMemoryFile(m.wsDir))
+	}
+	if result.resumeID != "" {
+		loaded, err := LoadSession(m.wsDir, result.resumeID)
+		if err == nil {
+			*m.session = *loaded
+			if m.session.Model != "" {
+				m.modelName = m.session.Model
+			}
+		}
+	}
+	if result.switchModel != "" {
+		m.modelName = result.switchModel
+		m.session.Model = m.modelName
+		if p, ok := switchFromActiveProvider(m.modelName); ok {
+			m.provider = p
+		} else {
+			newKey, newBase := detectAPIConfig(m.modelName)
+			if newKey != "" {
+				m.provider = NewProvider(m.modelName, newKey, newBase, m.maxTokens)
+			}
+		}
+		saveActiveModel(m.wsDir, m.modelName)
+	}
+	m.program.Send(slashDoneMsg{})
+}
+
+func (m *uiModel) runShellCommand(shellCmd string) {
+	output := execDirectCommand(shellCmd, m.projectDir)
+	m.session.Messages = append(m.session.Messages, Message{
+		Role: "user",
+		Content: []ContentBlock{
+			{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, stripControlChars(output))},
+		},
+	})
+	if m.wsDir != "" {
+		m.session.Save(m.wsDir)
+	}
+	m.program.Send(slashDoneMsg{})
 }
 
 func (m *uiModel) handleTurnDone(msg turnDoneMsg) {
 	if msg.err != nil {
 		if msg.interrupted {
-			fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
 			if len(m.session.Messages) > 0 && m.session.Messages[len(m.session.Messages)-1].Role == "user" {
 				m.session.Messages = m.session.Messages[:len(m.session.Messages)-1]
 			}
-		} else {
-			fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, msg.err, reset)
 		}
-	} else {
-		m.st.turns.Add(1)
-		cacheRead := m.st.totalCacheRead.Load()
-		printTurnStats(int64(msg.lastInput), cacheRead, msg.elapsed)
 	}
-	syncStats(m.st, m.session, m.wsDir)
-	autoCompact(msg.lastInput, m.session, m.provider)
 }
 
 func (m uiModel) completeSlashCmd() (tea.Model, tea.Cmd) {
@@ -289,7 +373,6 @@ func (m uiModel) completeSlashCmd() (tea.Model, tea.Cmd) {
 	if !strings.HasPrefix(text, "/") {
 		return m, nil
 	}
-	// Find matching commands
 	var matches []string
 	for _, cmd := range slashCommands {
 		if strings.HasPrefix(cmd, text) {
@@ -298,13 +381,11 @@ func (m uiModel) completeSlashCmd() (tea.Model, tea.Cmd) {
 	}
 	if len(matches) == 1 {
 		m.textarea.SetValue(matches[0] + " ")
-		// Move cursor to end
 		m.textarea.CursorEnd()
 	} else if len(matches) > 1 {
-		// Find common prefix
 		prefix := matches[0]
-		for _, m := range matches[1:] {
-			for !strings.HasPrefix(m, prefix) {
+		for _, match := range matches[1:] {
+			for !strings.HasPrefix(match, prefix) {
 				prefix = prefix[:len(prefix)-1]
 			}
 		}
@@ -343,124 +424,77 @@ func (m uiModel) openEditor(prefill string) tea.Cmd {
 	})
 }
 
+// --- View ---
+
 func (m uiModel) View() string {
+	if m.height == 0 {
+		return ""
+	}
+
 	var b strings.Builder
+
+	// Output area — scrollable history
+	outputStr := m.output.String()
+	outputLines := strings.Split(outputStr, "\n")
+
+	// Calculate available height for output
+	inputHeight := m.textarea.Height() + 1 // +1 for prompt line
+	if m.state == stateWorking {
+		inputHeight = 2 // prompt + spinner
+	}
+	availHeight := m.height - inputHeight - 1
+	if availHeight < 1 {
+		availHeight = 1
+	}
+
+	// Show last N lines of output
+	if len(outputLines) > availHeight {
+		outputLines = outputLines[len(outputLines)-availHeight:]
+	}
+	for _, line := range outputLines {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+
+	// Pad to push input to bottom
+	pad := availHeight - len(outputLines)
+	for i := 0; i < pad; i++ {
+		b.WriteByte('\n')
+	}
+
+	// Prompt + input area
 	bg := ""
-	if m.bgCount > 0 {
-		bg = fmt.Sprintf(" %s[%d bg]%s", yellow, m.bgCount, reset)
+	bgCount := m.bgManager.RunningCount()
+	if bgCount > 0 {
+		bg = fmt.Sprintf(" %s[%d bg]%s", yellow, bgCount, reset)
 	}
 	prompt := fmt.Sprintf("%syu%s %s%s%s%s❯ ", boldGreen, reset, dim, shortModel(m.modelName), reset, bg)
-	b.WriteString(prompt + "\n")
-	b.WriteString(m.textarea.View())
+
+	if m.state == stateIdle {
+		b.WriteString(prompt)
+		b.WriteByte('\n')
+		b.WriteString(m.textarea.View())
+	} else {
+		b.WriteString(prompt)
+		b.WriteString(fmt.Sprintf("%s %s...%s", m.spinner.View(), "working", sDim(" ESC to cancel")))
+	}
+
 	return b.String()
 }
 
-// --- slashCmd wraps slash command execution as ExecCommand ---
-
-type slashCmd struct {
-	input      string
-	session    *Session
-	projectDir string
-	wsDir      string
-	provider   Provider
-	bgManager  *BgManager
-	st         *stats
-	modelName  string
-	maxTokens  int
-	stdin      io.Reader
-	stdout     io.Writer
-	stderr     io.Writer
+func sDim(s string) string {
+	return fmt.Sprintf("%s%s%s", dim, s, reset)
 }
 
-type slashDoneMsg struct{}
+// --- stdout pipe relay ---
 
-func (c *slashCmd) SetStdin(r io.Reader)  { c.stdin = r }
-func (c *slashCmd) SetStdout(w io.Writer)  { c.stdout = w }
-func (c *slashCmd) SetStderr(w io.Writer)  { c.stderr = w }
-
-func (c *slashCmd) Run() error {
-	if f, ok := c.stdin.(*os.File); ok {
-		os.Stdin = f
+func startOutputRelay(pr *os.File, p *tea.Program) {
+	scanner := bufio.NewScanner(pr)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		p.Send(outputMsg(line))
 	}
-	if f, ok := c.stdout.(*os.File); ok {
-		os.Stdout = f
-	}
-
-	fmt.Printf("\n%s%s%s %s\n\n", boldGreen, "yu>", reset, c.input)
-
-	result := handleSlashCommand(c.input, c.session, c.projectDir, c.wsDir, c.provider, c.bgManager, c.st)
-	if result.newSession {
-		*c.session = *NewSession(c.modelName)
-		fmt.Println("New session started.")
-	}
-	if result.resumeID != "" {
-		loaded, err := LoadSession(c.wsDir, result.resumeID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
-		} else {
-			*c.session = *loaded
-			if c.session.Model != "" {
-				c.modelName = c.session.Model
-			}
-			turns := countUserTurns(c.session.Messages)
-			fmt.Printf("Resumed: %s (%d turns)\n\n", c.session.Title, turns)
-			printSessionHistory(c.session.Messages)
-		}
-	}
-	if result.switchModel != "" {
-		c.modelName = result.switchModel
-		c.session.Model = c.modelName
-		if p, ok := switchFromActiveProvider(c.modelName); ok {
-			_ = p // provider will be picked up on next turn
-		} else {
-			newKey, _ := detectAPIConfig(c.modelName)
-			if newKey == "" {
-				fmt.Fprintf(os.Stderr, "No API key found for model %s\n", c.modelName)
-			}
-		}
-		saveActiveModel(c.wsDir, c.modelName)
-		fmt.Printf("\nSwitched to %s%s%s\n", bold, c.modelName, reset)
-	}
-	return nil
-}
-
-// --- shellExecCmd wraps !command execution as ExecCommand ---
-
-type shellExecCmd struct {
-	shellCmd   string
-	projectDir string
-	session    *Session
-	wsDir      string
-	stdin      io.Reader
-	stdout     io.Writer
-	stderr     io.Writer
-}
-
-func (c *shellExecCmd) SetStdin(r io.Reader)  { c.stdin = r }
-func (c *shellExecCmd) SetStdout(w io.Writer)  { c.stdout = w }
-func (c *shellExecCmd) SetStderr(w io.Writer)  { c.stderr = w }
-
-func (c *shellExecCmd) Run() error {
-	if f, ok := c.stdin.(*os.File); ok {
-		os.Stdin = f
-	}
-	if f, ok := c.stdout.(*os.File); ok {
-		os.Stdout = f
-	}
-
-	fmt.Printf("\n%s%s%s !%s\n\n", boldGreen, "yu>", reset, c.shellCmd)
-
-	output := execDirectCommand(c.shellCmd, c.projectDir)
-	c.session.Messages = append(c.session.Messages, Message{
-		Role: "user",
-		Content: []ContentBlock{
-			{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", c.shellCmd, stripControlChars(output))},
-		},
-	})
-	if c.wsDir != "" {
-		c.session.Save(c.wsDir)
-	}
-	return nil
 }
 
 // --- Entry point ---
@@ -474,8 +508,31 @@ func RunInteractive(
 	m := newUIModel(session, provider, system, tools, executor, bgManager,
 		st, projectDir, wsDir, modelName, maxTokens, ctx)
 
-	p := tea.NewProgram(m)
+	// Hijack stdout to pipe — all fmt.Printf goes through pipe → outputMsg
+	origStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pipe error: %v\n", err)
+		return
+	}
+	os.Stdout = pw
+	m.origStdout = origStdout
+	m.pipeWriter = pw
+
+	// Create program with output to original stdout (not the pipe)
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(origStdout))
+	m.program = p
+
+	// Start relay goroutine
+	go startOutputRelay(pr, p)
+
 	if _, err := p.Run(); err != nil {
+		os.Stdout = origStdout
 		fmt.Fprintf(os.Stderr, "UI error: %v\n", err)
 	}
+
+	// Restore stdout
+	pw.Close()
+	pr.Close()
+	os.Stdout = origStdout
 }
