@@ -24,6 +24,7 @@ var slashCommands = []string{
 	"/jobs", "/logs", "/kill", "/rollback", "/stats",
 	"/remember", "/memory", "/forget",
 	"/copilot-login", "/copilot-logout",
+	"/clock",
 }
 
 // stats tracks token usage for the current run.
@@ -166,7 +167,6 @@ func Main() {
 
 	// --- Interactive mode ---
 
-	printWelcome(model, projectDir, session)
 	RunInteractive(session, provider, system, tools, executor, bgManager, &st,
 		projectDir, wsDir, model, maxTokens)
 	bgManager.StopAll()
@@ -210,16 +210,60 @@ func expandAtFiles(input, projectDir string) (display string, expanded string) {
 
 func printWelcome(model, projectDir string, session *Session) {
 	fmt.Println()
-	fmt.Printf("  %syu%s %s%s%s\n", boldCyan, reset, dim, shortModel(model), reset)
-	fmt.Printf("  %s%s%s\n", dim, projectDir, reset)
+
+	// ASCII art boy + logo
+	logo := []string{
+		`    ○       `,
+		`   /|\      ` + boldCyan + `  Yu` + reset + dim + ` (愚)` + reset,
+		`    |       ` + dim + `  live each day as if it's the last` + reset,
+		`   / \      `,
+	}
+	for _, line := range logo {
+		fmt.Println(line)
+	}
+	fmt.Println()
+
+	// Info box
+	home, _ := os.UserHomeDir()
+	dir := projectDir
+	if strings.HasPrefix(dir, home) {
+		dir = "~" + dir[len(home):]
+	}
+
+	info := []string{
+		fmt.Sprintf("  Model    %s", shortModel(model)),
+		fmt.Sprintf("  Project  %s", dir),
+	}
 
 	if len(session.Messages) > 0 {
 		turns := countUserTurns(session.Messages)
-		fmt.Printf("  %sResumed: %s (%d turns)%s\n", dim, session.Title, turns, reset)
+		info = append(info, fmt.Sprintf("  Session  %s (%d turns)", session.Title, turns))
+	}
+
+	// Find max width
+	maxW := 0
+	for _, line := range info {
+		if len(line) > maxW {
+			maxW = len(line)
+		}
+	}
+	maxW += 2
+
+	fmt.Printf("  %s╭%s╮%s\n", dim, strings.Repeat("─", maxW), reset)
+	for _, line := range info {
+		pad := maxW - len(line)
+		if pad < 0 {
+			pad = 0
+		}
+		fmt.Printf("  %s│%s%s%s%s│%s\n", dim, reset, line, strings.Repeat(" ", pad), dim, reset)
+	}
+	fmt.Printf("  %s╰%s╯%s\n", dim, strings.Repeat("─", maxW), reset)
+
+	if len(session.Messages) > 0 {
 		fmt.Println()
 		printSessionHistory(session.Messages)
 	} else {
-		fmt.Printf("  %sType /help for commands%s\n", dim, reset)
+		fmt.Printf("\n  %sType /help for commands • Ctrl+J newline • Ctrl+G editor%s\n", dim, reset)
 	}
 	fmt.Println()
 }
@@ -295,7 +339,7 @@ func printTurnStats(tokens int64, cacheRead int64, elapsed time.Duration) {
 	if cacheRead > 0 {
 		cache = fmt.Sprintf("  cached:%s", formatTokens(cacheRead))
 	}
-	fmt.Printf("\n\n  %s%s  %s%s  %s  %s%s\n\n",
+	fmt.Printf("\n  %s%s  %s%s  %s  %s%s\n",
 		dim, emoji, formatTokens(tokens), cache, formatDuration(elapsed), now, reset)
 }
 
@@ -506,23 +550,11 @@ func startSpinner(label string) *spinnerState {
 		stop:    make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
+	// In TUI mode, the spinner is rendered by bubbletea's View.
+	// This goroutine is a no-op — just wait for stop signal.
 	go func() {
 		defer close(s.stopped)
-		i := 0
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-s.stop:
-				// Clear spinner line
-				fmt.Printf("\r\033[K")
-				return
-			case <-ticker.C:
-				frame := spinnerFrames[i%len(spinnerFrames)]
-				fmt.Printf("\r  %s%s %s%s", cyan, frame, s.label, reset)
-				i++
-			}
-		}
+		<-s.stop
 	}()
 	return s
 }
@@ -664,10 +696,9 @@ func resolveSession(wsDir, model string) *Session {
 	if latest == nil || len(latest.Messages) == 0 {
 		return NewSession(model)
 	}
+	// Auto-resume recent sessions (< 1 hour old)
 	if time.Since(latest.UpdatedAt) < time.Hour {
-		if promptForResume(latest) {
-			return latest
-		}
+		return latest
 	}
 	return NewSession(model)
 }

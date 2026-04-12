@@ -23,6 +23,7 @@ type ToolExecutor struct {
 	ProjectDir  string
 	BashTimeout time.Duration
 	BgManager   *BgManager
+
 }
 
 // toolDefs returns all tool definitions for the API.
@@ -721,18 +722,15 @@ func (e *ToolExecutor) execAskUser(input json.RawMessage) (string, bool) {
 	fmt.Printf("\n  \033[1;33m%s\033[0m\n", args.Question)
 
 	if len(args.Options) > 0 {
-		selected := arrowSelect(args.Options)
+		selected := uiSelect(args.Options)
 		if selected == "" {
 			return "(cancelled)", false
 		}
 		return selected, false
 	}
 
-	// No options — free text input
-	fmt.Print("  > ")
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	return strings.TrimSpace(answer), false
+	answer := uiInput(args.Question)
+	return answer, false
 }
 
 func (e *ToolExecutor) execPlan(input json.RawMessage) (string, bool) {
@@ -744,13 +742,14 @@ func (e *ToolExecutor) execPlan(input json.RawMessage) (string, bool) {
 		return fmt.Sprintf("invalid input: %v", err), true
 	}
 
+	// Print plan via stdout (goes through pipe to UI)
 	fmt.Printf("\n  \033[1;36m%s\033[0m\n", args.Title)
 	for i, step := range args.Steps {
 		fmt.Printf("  %d. %s\n", i+1, step)
 	}
 	fmt.Println()
 
-	selected := arrowSelect([]string{"Approve", "Reject", "Edit"})
+	selected := uiSelect([]string{"Approve", "Reject", "Edit"})
 	switch selected {
 	case "Approve":
 		return "Plan approved. Proceed with implementation.", false

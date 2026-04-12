@@ -76,7 +76,7 @@ func handleSlashCommand(input string, session *Session, projectDir, wsDir string
 			age := formatAge(s.UpdatedAt)
 			labels = append(labels, fmt.Sprintf("%s %s(%s, %s)%s", s.Title, dim, s.Model, age, reset))
 		}
-		selected := arrowSelect(labels)
+		selected := uiSelect(labels)
 		if selected == "" || selected == selectBack {
 			return commandResult{handled: true}
 		}
@@ -337,7 +337,7 @@ func pickModel(current string) string {
 	for {
 		// Step 1: Pick provider
 		fmt.Printf("\n  %sProvider:%s\n", bold, reset)
-		selectedLabel := arrowSelect(providerLabels)
+		selectedLabel := uiSelect(providerLabels)
 		if selectedLabel == "" || selectedLabel == selectBack {
 			return "" // exit
 		}
@@ -383,7 +383,7 @@ func pickModel(current string) string {
 		}
 
 		fmt.Printf("\n  %sModel:%s  %s(u: back, q: exit)%s\n", bold, reset, dim, reset)
-		selected := arrowSelectAt(labels, currentIdx)
+		selected := uiSelectAt(labels, currentIdx)
 		if selected == selectBack {
 			continue // back to provider
 		}
@@ -611,7 +611,7 @@ func doRollback(projectDir string) {
 	}
 
 	fmt.Printf("\n  %sSelect snapshot to restore:%s\n", bold, reset)
-	selected := arrowSelect(labels)
+	selected := uiSelect(labels)
 	if selected == "" || selected == selectBack {
 		return
 	}
@@ -627,7 +627,7 @@ func doRollback(projectDir string) {
 
 	// Confirm
 	fmt.Printf("\n  %sRollback to snapshot #%s? This will overwrite current files.%s\n", yellow, selectedID, reset)
-	confirm := arrowSelect([]string{"Yes, rollback", "Cancel"})
+	confirm := uiSelect([]string{"Yes, rollback", "Cancel"})
 	if confirm != "Yes, rollback" {
 		fmt.Println("  Cancelled.")
 		return
