@@ -814,14 +814,16 @@ func RunInteractive(
 		m.output.Reset()
 	}
 
-	// Hijack stdout → pipe → program.Println (in relay goroutine)
+	// Hijack stdout/stderr → pipe → program.Println (in relay goroutine)
 	origStdout := os.Stdout
+	origStderr := os.Stderr
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pipe error: %v\n", err)
 		return
 	}
 	os.Stdout = pw
+	os.Stderr = pw
 
 	// Create program writing to original stdout
 	p := tea.NewProgram(m, tea.WithOutput(origStdout))
@@ -838,6 +840,7 @@ func RunInteractive(
 
 	if _, err := p.Run(); err != nil {
 		os.Stdout = origStdout
+		os.Stderr = origStderr
 		fmt.Fprintf(os.Stderr, "UI error: %v\n", err)
 	}
 
@@ -847,4 +850,5 @@ func RunInteractive(
 	pw.Close()
 	pr.Close()
 	os.Stdout = origStdout
+	os.Stderr = origStderr
 }
