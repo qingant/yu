@@ -169,10 +169,40 @@ func writeWelcome(buf *strings.Builder, model, projectDir string, session *Sessi
 	}
 	buf.WriteString(fmt.Sprintf("  %s╰%s╯%s\n", dim, strings.Repeat("─", maxW), reset))
 
-	if len(session.Messages) == 0 {
+	if len(session.Messages) > 0 {
+		buf.WriteString("\n")
+		writeSessionHistory(buf, session.Messages)
+	} else {
 		buf.WriteString(fmt.Sprintf("\n  %sType /help • Ctrl+J newline • Ctrl+G editor • Ctrl+L clear%s\n", dim, reset))
 	}
 	buf.WriteString("\n")
+}
+
+func writeSessionHistory(buf *strings.Builder, messages []Message) {
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			for _, b := range msg.Content {
+				if b.Type == "text" {
+					text := b.Text
+					if len(text) > 120 {
+						text = text[:120] + "..."
+					}
+					buf.WriteString(fmt.Sprintf("  %syu>%s %s\n", boldGreen, reset, text))
+				}
+			}
+		} else if msg.Role == "assistant" {
+			for _, b := range msg.Content {
+				if b.Type == "text" {
+					text := b.Text
+					if len(text) > 120 {
+						text = text[:120] + "..."
+					}
+					buf.WriteString(fmt.Sprintf("  %s%s%s\n", dim, text, reset))
+				}
+			}
+		}
+	}
+	buf.WriteString(fmt.Sprintf("\n%s─── end of history ──-%s\n", dim, reset))
 }
 
 func (m uiModel) Init() tea.Cmd {
@@ -388,7 +418,7 @@ func (m uiModel) handleInteractKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *uiModel) submit(input string) (tea.Model, tea.Cmd) {
 	ts := time.Now().Format("15:04:05")
-	m.output.WriteString(fmt.Sprintf("\n%syu %s %s>%s %s\n\n", boldGreen, ts, shortModel(m.modelName), reset, input))
+	m.output.WriteString(fmt.Sprintf("\n%syu%s %s%s %s%s>%s %s\n\n", cyan, reset, dim, ts, shortModel(m.modelName), reset, reset, input))
 
 	if input == "/clock" {
 		toggleClock()
@@ -475,6 +505,12 @@ func (m *uiModel) runSlashCommand(input string) {
 			if m.session.Model != "" {
 				m.modelName = m.session.Model
 			}
+			turns := countUserTurns(m.session.Messages)
+			fmt.Printf("Resumed: %s (%d turns)\n\n", m.session.Title, turns)
+			// Print history through pipe
+			var hist strings.Builder
+			writeSessionHistory(&hist, m.session.Messages)
+			fmt.Print(hist.String())
 		}
 	}
 	if result.switchModel != "" {

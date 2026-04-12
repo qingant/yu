@@ -689,17 +689,6 @@ func promptForResume(latest *Session) bool {
 }
 
 func resolveSession(wsDir, model string) *Session {
-	if wsDir == "" {
-		return NewSession(model)
-	}
-	latest := LoadLatestSession(wsDir)
-	if latest == nil || len(latest.Messages) == 0 {
-		return NewSession(model)
-	}
-	// Auto-resume recent sessions (< 1 hour old)
-	if time.Since(latest.UpdatedAt) < time.Hour {
-		return latest
-	}
 	return NewSession(model)
 }
 
