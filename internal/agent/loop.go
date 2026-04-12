@@ -76,17 +76,6 @@ func Main() {
 		model = "claude-sonnet-4-6"
 	}
 
-	apiKey, baseURL := detectAPIConfig(model)
-	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "No API key found.")
-		fmt.Fprintln(os.Stderr, "Set ANTHROPIC_AUTH_TOKEN or OPENAI_API_KEY in your shell environment,")
-		fmt.Fprintln(os.Stderr, "or add it to your .yu/env file (yu config set ANTHROPIC_AUTH_TOKEN sk-ant-...)")
-		os.Exit(1)
-	}
-
-	maxTokens := 8192
-	provider := NewProvider(model, apiKey, baseURL, maxTokens)
-
 	// Background process manager
 	tmpDir := os.TempDir()
 	bgManager := NewBgManager(projectDir, filepath.Join(tmpDir, "yu-bg"), func(p *BgProcess) {
@@ -134,13 +123,35 @@ func Main() {
 	} else {
 		session = resolveSession(wsDir, model)
 	}
+	providerKey := os.Getenv("YU_PROVIDER")
+	if providerKey == "" && session.Provider != "" {
+		providerKey = session.Provider
+	}
+	if providerKey == "" {
+		providerKey = loadActiveProvider(wsDir)
+	}
 	if session.Model != "" && session.Model != model {
 		model = session.Model
-		newKey, newBase := detectAPIConfig(model)
-		if newKey != "" {
-			provider = NewProvider(model, newKey, newBase, maxTokens)
-		}
 	}
+	resolvedProvider, ok := detectProviderConfig(model, providerKey)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "No API key found.")
+		fmt.Fprintln(os.Stderr, "Set ANTHROPIC_AUTH_TOKEN or OPENAI_API_KEY in your shell environment,")
+		fmt.Fprintln(os.Stderr, "or add it to your .yu/env file (yu config set ANTHROPIC_AUTH_TOKEN sk-ant-...)")
+		os.Exit(1)
+	}
+	activeProvider = &resolvedProvider
+	session.Provider = resolvedProvider.Key
+	saveActiveProvider(wsDir, resolvedProvider.Key)
+
+	maxTokens := 8192
+	provider := NewProviderWithProtocol(
+		resolvedProvider.Protocol,
+		model,
+		resolvedProvider.APIKey,
+		resolvedProvider.BaseURL,
+		maxTokens,
+	)
 
 	// System prompt
 	memoryFile := findMemoryFile(wsDir)
@@ -206,7 +217,6 @@ func expandAtFiles(input, projectDir string) (display string, expanded string) {
 }
 
 // --- Welcome & History ---
-
 
 func printWelcome(model, projectDir string, session *Session) {
 	fmt.Println()
@@ -572,10 +582,10 @@ func (s *spinnerState) Stop() {
 // --- Stream Processing ---
 
 type streamResponse struct {
-	Blocks          []ContentBlock
-	StopReason      string
-	InputTokens     int
-	OutputTokens    int
+	Blocks           []ContentBlock
+	StopReason       string
+	InputTokens      int
+	OutputTokens     int
 	CacheReadTokens  int
 	CacheWriteTokens int
 }
@@ -707,35 +717,29 @@ func countUserTurns(messages []Message) int {
 	return count
 }
 
-func detectAPIConfig(model string) (apiKey, baseURL string) {
-	if isAnthropicModel(model) {
-		apiKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
-		if apiKey == "" {
-			apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
-		baseURL = os.Getenv("ANTHROPIC_BASE_URL")
-		if baseURL == "" {
-			baseURL = "https://api.anthropic.com"
-		}
-		return
-	}
-	// OpenAI / other OpenAI-compatible
-	apiKey = os.Getenv("OPENAI_API_KEY")
-	baseURL = os.Getenv("OPENAI_BASE_URL")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com"
-	}
-	if apiKey != "" {
-		return
+func detectProviderConfig(model, preferredProvider string) (providerInfo, bool) {
+	if p, ok := lookupProvider(preferredProvider); ok {
+		return p, true
 	}
 
-	// Fallback: GitHub Copilot (if logged in and no other keys set)
-	copilotBase := os.Getenv("COPILOT_BASE_URL")
-	if copilotBase != "" {
-		apiKey = "copilot" // dummy — proxy injects real JWT
-		baseURL = copilotBase
+	if isAnthropicModel(model) {
+		if p, ok := lookupProvider("anthropic"); ok {
+			return p, true
+		}
 	}
-	return
+	if p, ok := lookupProvider("openai"); ok {
+		return p, true
+	}
+	if p, ok := lookupProvider("copilot"); ok {
+		return p, true
+	}
+	if p, ok := lookupProvider("yu-custom"); ok {
+		return p, true
+	}
+	if p, ok := lookupProvider("anthropic"); ok {
+		return p, true
+	}
+	return providerInfo{}, false
 }
 
 // activeProvider is set by /model picker — determines API key/base for subsequent calls.
@@ -746,7 +750,17 @@ func switchFromActiveProvider(model string) (Provider, bool) {
 	if activeProvider == nil {
 		return nil, false
 	}
-	return NewProvider(model, activeProvider.APIKey, activeProvider.BaseURL, 8192), true
+	return NewProviderWithProtocol(modelProtocol(activeProvider, model), model, activeProvider.APIKey, activeProvider.BaseURL, 8192), true
+}
+
+func modelProtocol(p *providerInfo, model string) string {
+	if p != nil && p.Protocol != "" {
+		return p.Protocol
+	}
+	if isAnthropicModel(model) {
+		return "anthropic"
+	}
+	return "openai"
 }
 
 // execDirectCommand runs a shell command directly (for !cmd), streaming output to terminal.
@@ -939,12 +953,31 @@ func loadActiveModel(wsDir string) string {
 	return strings.TrimSpace(string(data))
 }
 
+func loadActiveProvider(wsDir string) string {
+	if wsDir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(wsDir, "active-provider"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
 func saveActiveModel(wsDir, model string) {
 	if wsDir == "" {
 		return
 	}
 	os.MkdirAll(wsDir, 0700)
 	os.WriteFile(filepath.Join(wsDir, "active-model"), []byte(model+"\n"), 0600)
+}
+
+func saveActiveProvider(wsDir, provider string) {
+	if wsDir == "" || provider == "" {
+		return
+	}
+	os.MkdirAll(wsDir, 0700)
+	os.WriteFile(filepath.Join(wsDir, "active-provider"), []byte(provider+"\n"), 0600)
 }
 
 func findMemoryFile(wsDir string) string {

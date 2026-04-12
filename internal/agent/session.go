@@ -26,6 +26,7 @@ type Session struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	Model          string     `json:"model"`
+	Provider       string     `json:"provider,omitempty"`
 	Title          string     `json:"title"`
 	Messages       []Message  `json:"messages"`
 	CompactSummary string     `json:"compact_summary,omitempty"`

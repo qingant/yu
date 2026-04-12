@@ -14,7 +14,14 @@ type Provider interface {
 
 // NewProvider creates the appropriate provider based on model name.
 func NewProvider(model, apiKey, baseURL string, maxTokens int) Provider {
-	if isAnthropicModel(model) {
+	return NewProviderWithProtocol("", model, apiKey, baseURL, maxTokens)
+}
+
+// NewProviderWithProtocol creates a provider using an explicit protocol when available.
+// This is required for OpenAI-compatible backends that expose Anthropic-named models
+// like Claude through a non-Anthropic API surface (e.g. Copilot).
+func NewProviderWithProtocol(protocol, model, apiKey, baseURL string, maxTokens int) Provider {
+	if protocol == "anthropic" || (protocol == "" && isAnthropicModel(model)) {
 		return &AnthropicProvider{
 			Model:     model,
 			APIKey:    apiKey,

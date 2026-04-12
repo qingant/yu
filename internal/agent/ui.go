@@ -19,9 +19,9 @@ var globalProgram *tea.Program
 // --- Messages ---
 
 type (
-	outputMsg      string    // chunk from stdout pipe
-	tickMsg        time.Time // 1-second tick for status bar
-	initMsg        struct{}  // print session history after TUI starts
+	outputMsg      string               // chunk from stdout pipe
+	tickMsg        time.Time            // 1-second tick for status bar
+	initMsg        struct{}             // print session history after TUI starts
 	slashSelectMsg struct{ cmd string } // user picked from slash menu
 	turnDoneMsg    struct {
 		lastInput   int
@@ -46,9 +46,9 @@ const (
 // --- Model ---
 
 type uiModel struct {
-	textarea textarea.Model
-	spinner  spinner.Model
-	state    appState
+	textarea  textarea.Model
+	spinner   spinner.Model
+	state     appState
 	output    *strings.Builder // accumulated output (pointer to survive value copies)
 	width     int
 	height    int
@@ -56,9 +56,9 @@ type uiModel struct {
 	turnStart time.Time // when current turn started
 
 	// Interaction state
-	interactReq     *interactRequest
-	interactCursor  int
-	interactInput   textarea.Model // for free text input
+	interactReq    *interactRequest
+	interactCursor int
+	interactInput  textarea.Model // for free text input
 
 	// Business context
 	session    *Session
@@ -77,7 +77,6 @@ type uiModel struct {
 
 	// Turn cancellation
 	turnCancel context.CancelFunc
-
 }
 
 func newUIModel(
@@ -110,25 +109,25 @@ func newUIModel(
 	writeWelcome(output, modelName, projectDir, session)
 
 	return uiModel{
-		textarea:   ta,
-		spinner:    sp,
-		state:      stateIdle,
-		output:     output,
-		projectDir: projectDir,
-		wsDir:      wsDir,
-		modelName:  modelName,
-		maxTokens:  maxTokens,
-		session:    session,
-		provider:   provider,
-		system:     system,
-		tools:      tools,
-		executor:   executor,
-		bgManager:  bgManager,
-		st:         st,
-		ctx:        ctx,
-		cancel:     cancel,
+		textarea:      ta,
+		spinner:       sp,
+		state:         stateIdle,
+		output:        output,
+		projectDir:    projectDir,
+		wsDir:         wsDir,
+		modelName:     modelName,
+		maxTokens:     maxTokens,
+		session:       session,
+		provider:      provider,
+		system:        system,
+		tools:         tools,
+		executor:      executor,
+		bgManager:     bgManager,
+		st:            st,
+		ctx:           ctx,
+		cancel:        cancel,
 		interactInput: ia,
-		now:        time.Now(),
+		now:           time.Now(),
 	}
 }
 
@@ -274,8 +273,12 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		// Auto-grow: minimum 2, +1 per extra newline
 		lines := strings.Count(m.textarea.Value(), "\n") + 2
-		if lines < 2 { lines = 2 }
-		if lines > 12 { lines = 12 }
+		if lines < 2 {
+			lines = 2
+		}
+		if lines > 12 {
+			lines = 12
+		}
 		m.textarea.SetHeight(lines)
 		return m, cmd
 	case stateInteract:
@@ -507,7 +510,12 @@ func (m *uiModel) runAgentTurn(ctx context.Context, cancel context.CancelFunc) {
 func (m *uiModel) runSlashCommand(input string) {
 	result := handleSlashCommand(input, m.session, m.projectDir, m.wsDir, m.provider, m.bgManager, m.st)
 	if result.newSession {
-		*m.session = *NewSession(m.modelName)
+		next := NewSession(m.modelName)
+		next.Provider = m.session.Provider
+		if activeProvider != nil {
+			next.Provider = activeProvider.Key
+		}
+		*m.session = *next
 		m.system = buildSystemPrompt(m.projectDir, findMemoryFile(m.wsDir))
 	}
 	if result.resumeID != "" {
@@ -516,6 +524,12 @@ func (m *uiModel) runSlashCommand(input string) {
 			*m.session = *loaded
 			if m.session.Model != "" {
 				m.modelName = m.session.Model
+			}
+			if resolved, ok := detectProviderConfig(m.modelName, m.session.Provider); ok {
+				activeProvider = &resolved
+				m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens)
+				m.session.Provider = resolved.Key
+				saveActiveProvider(m.wsDir, resolved.Key)
 			}
 			turns := countUserTurns(m.session.Messages)
 			fmt.Printf("Resumed: %s (%d turns)\n\n", m.session.Title, turns)
@@ -527,10 +541,17 @@ func (m *uiModel) runSlashCommand(input string) {
 		m.session.Model = m.modelName
 		if p, ok := switchFromActiveProvider(m.modelName); ok {
 			m.provider = p
+			if activeProvider != nil {
+				m.session.Provider = activeProvider.Key
+				saveActiveProvider(m.wsDir, activeProvider.Key)
+			}
 		} else {
-			newKey, newBase := detectAPIConfig(m.modelName)
-			if newKey != "" {
-				m.provider = NewProvider(m.modelName, newKey, newBase, m.maxTokens)
+			resolved, ok := detectProviderConfig(m.modelName, m.session.Provider)
+			if ok {
+				activeProvider = &resolved
+				m.provider = NewProviderWithProtocol(resolved.Protocol, m.modelName, resolved.APIKey, resolved.BaseURL, m.maxTokens)
+				m.session.Provider = resolved.Key
+				saveActiveProvider(m.wsDir, resolved.Key)
 			}
 		}
 		saveActiveModel(m.wsDir, m.modelName)

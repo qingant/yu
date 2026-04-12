@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 )
 
 // commandResult tells the main loop what to do after a command.
@@ -316,6 +315,33 @@ func detectProviders() []providerInfo {
 	}
 
 	return providers
+}
+
+func normalizeProviderKey(key string) string {
+	switch strings.TrimSpace(strings.ToLower(key)) {
+	case "":
+		return ""
+	case "anthropic":
+		return "anthropic"
+	case "openai":
+		return "openai"
+	case "copilot", "github-copilot", "github_copilot":
+		return "copilot"
+	case "custom", "yu-custom", "yu_custom":
+		return "yu-custom"
+	default:
+		return key
+	}
+}
+
+func lookupProvider(key string) (providerInfo, bool) {
+	key = normalizeProviderKey(key)
+	for _, p := range detectProviders() {
+		if p.Key == key {
+			return p, true
+		}
+	}
+	return providerInfo{}, false
 }
 
 // pickModel runs the two-level provider → model selection.
