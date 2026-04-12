@@ -567,6 +567,10 @@ func (m *uiModel) runAgentTurn(ctx context.Context, cancel context.CancelFunc) {
 }
 
 func (m *uiModel) runSlashCommand(input string) {
+	prevProviderKey := ""
+	if activeProvider != nil {
+		prevProviderKey = activeProvider.Key
+	}
 	result := handleSlashCommand(input, m.session, m.projectDir, m.wsDir, m.provider, m.bgManager, m.st)
 	if result.newSession {
 		next := NewSession(m.modelName)
@@ -614,6 +618,12 @@ func (m *uiModel) runSlashCommand(input string) {
 			}
 		}
 		saveActiveModel(m.wsDir, m.modelName)
+	} else if strings.HasPrefix(input, "/model") && activeProvider != nil && activeProvider.Key != prevProviderKey {
+		if p, ok := switchFromActiveProvider(m.modelName); ok {
+			m.provider = p
+			m.session.Provider = activeProvider.Key
+			saveActiveProvider(m.wsDir, activeProvider.Key)
+		}
 	}
 	globalProgram.Send(turnDoneMsg{}) // reuse to signal done
 }
