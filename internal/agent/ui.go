@@ -345,10 +345,11 @@ func (m uiModel) openEditor(prefill string) tea.Cmd {
 
 func (m uiModel) View() string {
 	var b strings.Builder
-	prompt := fmt.Sprintf(" %s%s%s ", boldCyan, shortModel(m.modelName), reset)
+	bg := ""
 	if m.bgCount > 0 {
-		prompt += fmt.Sprintf("%s[%d bg]%s ", dim, m.bgCount, reset)
+		bg = fmt.Sprintf(" %s[%d bg]%s", yellow, m.bgCount, reset)
 	}
+	prompt := fmt.Sprintf("%syu%s %s%s%s%s❯ ", boldGreen, reset, dim, shortModel(m.modelName), reset, bg)
 	b.WriteString(prompt + "\n")
 	b.WriteString(m.textarea.View())
 	return b.String()
