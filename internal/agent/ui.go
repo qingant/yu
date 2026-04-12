@@ -336,11 +336,7 @@ func (m uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.completeSlashCmd()
 
 	case tea.KeyCtrlL:
-		// Clear scrollback above the TUI
-		if globalProgram != nil {
-			globalProgram.Println("\033[2J\033[H")
-		}
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tea.KeyCtrlG:
 		return m, m.openEditor(m.textarea.Value())
