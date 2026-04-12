@@ -8,15 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
-
-	"github.com/chzyer/readline"
 )
 
 // slashCommands defines all available commands for tab completion.
@@ -108,36 +104,6 @@ func Main() {
 	tools := toolDefs()
 	var st stats
 
-	// Signal handling
-	// Ctrl+C during a turn cancels the turn; Ctrl+C while idle exits.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var inTurn atomic.Bool
-	var turnCancel atomic.Pointer[context.CancelFunc]
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		for sig := range sigCh {
-			if sig == syscall.SIGTERM {
-				bgManager.StopAll()
-				fmt.Println()
-				os.Exit(0)
-			}
-			// SIGINT (Ctrl+C)
-			if inTurn.Load() {
-				// Cancel just the current turn
-				if tc := turnCancel.Load(); tc != nil {
-					(*tc)()
-				}
-			} else {
-				// Idle — exit
-				bgManager.StopAll()
-				fmt.Println()
-				os.Exit(0)
-			}
-		}
-	}()
-
 	// Parent process watchdog — if sandbox exits, we must exit too.
 	// When parent dies on macOS/Linux, ppid becomes 1 (launchd/init).
 	parentPID := os.Getppid()
@@ -185,7 +151,8 @@ func Main() {
 			Role:    "user",
 			Content: []ContentBlock{{Type: "text", Text: execPrompt}},
 		})
-		_, err := agentTurn(ctx, provider, system, &session.Messages, tools, executor, &st)
+		execCtx := context.Background()
+		_, err := agentTurn(execCtx, provider, system, &session.Messages, tools, executor, &st)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -199,289 +166,12 @@ func Main() {
 
 	// --- Interactive mode ---
 
-	// Sanitize existing history file (strip ANSI/control chars from past sessions)
-	hFile := historyFile(wsDir)
-	sanitizeHistoryFile(hFile)
-
-	// Enable bracketed paste: newlines in pasted text are replaced with a
-	// placeholder so readline doesn't treat them as Enter.
-	pasteIn := newPasteStdin()
-
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:                 promptString(model, bgManager.RunningCount()),
-		HistoryFile:            hFile,
-		HistoryLimit:           1000,
-		DisableAutoSaveHistory: true,
-		AutoComplete:           newCompleter(projectDir),
-		InterruptPrompt:        "^C",
-		EOFPrompt:              "exit",
-		HistorySearchFold:      true,
-		FuncFilterInputRune:    filterInputRune,
-		Stdin:                  pasteIn,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "readline init failed: %v\n", err)
+	if err := RunUI(session, provider, system, tools, executor, bgManager, &st,
+		projectDir, wsDir, model, maxTokens); err != nil {
+		fmt.Fprintf(os.Stderr, "UI error: %v\n", err)
 		os.Exit(1)
 	}
-	defer rl.Close()
-
-	// Re-enable bracketed paste after readline has entered raw mode
-	// (belt and suspenders — raw mode shouldn't reset it, but some terminals do)
-	os.Stdout.Write([]byte("\033[?2004h"))
-
-	// Welcome banner
-	printWelcome(model, projectDir, session)
-
-	for {
-		rl.SetPrompt(promptString(model, bgManager.RunningCount()))
-		input, err := readMultiLine(rl, model, bgManager, pasteIn)
-		if err != nil {
-			if err == readline.ErrInterrupt {
-				continue
-			}
-			if err == io.EOF {
-				break
-			}
-			break
-		}
-		if input == "" {
-			continue
-		}
-
-		// Save sanitized input to history (control chars stripped, newlines → spaces
-		// since readline history is line-based)
-		histEntry := stripControlChars(input)
-		histEntry = strings.ReplaceAll(histEntry, "\n", " ")
-		rl.SaveHistory(histEntry)
-
-		// Slash commands
-		if strings.HasPrefix(input, "/") {
-			result := handleSlashCommand(input, session, projectDir, wsDir, provider, bgManager, &st)
-			if result.newSession {
-				session = NewSession(model)
-				system = buildSystemPrompt(projectDir, findMemoryFile(wsDir))
-				fmt.Println("New session started.")
-			}
-			if result.resumeID != "" {
-				loaded, err := LoadSession(wsDir, result.resumeID)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
-				} else {
-					session = loaded
-					if session.Model != "" && session.Model != model {
-						model = session.Model
-						newKey, newBase := detectAPIConfig(model)
-						if newKey != "" {
-							provider = NewProvider(model, newKey, newBase, maxTokens)
-						}
-					}
-					turns := countUserTurns(session.Messages)
-					fmt.Printf("Resumed: %s (%d turns)\n\n", session.Title, turns)
-					printSessionHistory(session.Messages)
-				}
-			}
-			if result.switchModel != "" {
-				model = result.switchModel
-				session.Model = model
-				// Try active provider first (from /model picker)
-				if p, ok := switchFromActiveProvider(model); ok {
-					provider = p
-				} else {
-					// Fallback to env detection
-					newKey, newBase := detectAPIConfig(model)
-					if newKey == "" {
-						fmt.Fprintf(os.Stderr, "No API key found for model %s\n", model)
-					} else {
-						provider = NewProvider(model, newKey, newBase, maxTokens)
-					}
-				}
-				saveActiveModel(wsDir, model)
-				fmt.Printf("\nSwitched to %s%s%s\n", bold, model, reset)
-			}
-			if result.handled {
-				continue
-			}
-		}
-
-		// !cmd — direct shell execution, output added to conversation for model context
-		if strings.HasPrefix(input, "!") {
-			shellCmd := strings.TrimPrefix(input, "!")
-			shellCmd = strings.TrimSpace(shellCmd)
-			if shellCmd != "" {
-				output := execDirectCommand(shellCmd, projectDir)
-				// Add to conversation so the model can see it (strip control chars so
-				// ANSI escapes from colored command output don't pollute the context)
-				session.Messages = append(session.Messages, Message{
-					Role: "user",
-					Content: []ContentBlock{
-						{Type: "text", Text: fmt.Sprintf("[User ran shell command: %s]\n\n%s", shellCmd, stripControlChars(output))},
-					},
-				})
-				if wsDir != "" {
-					session.Save(wsDir)
-				}
-				continue
-			}
-		}
-
-		// User message — expand @file references
-		_, expanded := expandAtFiles(input, projectDir)
-		session.Messages = append(session.Messages, Message{
-			Role: "user",
-			Content: []ContentBlock{
-				{Type: "text", Text: expanded},
-			},
-		})
-
-		// Agent turn with spinner
-		prevTokens := st.totalInput.Load() + st.totalOutput.Load()
-		turnStart := time.Now()
-
-		// Per-turn context: Ctrl+C cancels just this turn.
-		// readline exits raw mode after Readline() returns, so during a turn
-		// the terminal is in cooked mode and Ctrl+C generates SIGINT.
-		thisTurnCtx, thisTurnCancel := context.WithCancel(ctx)
-		turnCancel.Store(&thisTurnCancel)
-		inTurn.Store(true)
-
-		lastInput, turnErr := agentTurn(thisTurnCtx, provider, system, &session.Messages, tools, executor, &st)
-
-		inTurn.Store(false)
-		turnCancel.Store(nil)
-		wasInterrupted := thisTurnCtx.Err() != nil // check BEFORE cancel
-		thisTurnCancel()
-
-		if turnErr != nil {
-			if wasInterrupted {
-				fmt.Fprintf(os.Stderr, "\n%s↩ Interrupted%s\n", yellow, reset)
-				// Remove the last user message so the turn can be retried
-				if len(session.Messages) > 0 && session.Messages[len(session.Messages)-1].Role == "user" {
-					session.Messages = session.Messages[:len(session.Messages)-1]
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", boldRed, turnErr, reset)
-			}
-		}
-
-		elapsed := time.Since(turnStart)
-		st.turns.Add(1)
-		newTokens := st.totalInput.Load() + st.totalOutput.Load()
-		turnTokens := newTokens - prevTokens
-		cacheRead := st.totalCacheRead.Load()
-		printTurnStats(turnTokens, cacheRead, elapsed)
-
-		// Update session + global stats, auto-save
-		syncStats(&st, session, wsDir)
-
-		// Auto-compact when context is getting large
-		autoCompact(lastInput, session, provider)
-	}
-}
-
-// --- Input ---
-
-// readMultiLine reads input with multi-line support.
-//
-// Multi-line modes:
-//  1. Paste: pasted text containing newlines is captured as a single input
-//     (via bracketed paste — newlines are preserved automatically)
-//  2. Backslash continuation: line ending with \ continues on next line
-//  3. Triple-backtick block: start a line with ``` to enter multi-line mode,
-//     end with a line that is just ``` to submit
-//
-// In all cases, Ctrl+C cancels the multi-line input.
-func readMultiLine(rl *readline.Instance, model string, bgm *BgManager, pasteIn *pasteStdin) (string, error) {
-	line, err := rl.Readline()
-	if err != nil {
-		return "", err
-	}
-
-	// Bracketed paste: content was buffered, readline auto-submitted ""
-	if paste := pasteIn.TakePaste(); paste != "" {
-		typed := strings.TrimSpace(line)
-		var result string
-		if typed != "" {
-			result = typed + "\n" + paste
-		} else {
-			result = paste
-		}
-		result = strings.TrimSpace(result)
-		// Echo what was pasted
-		lines := strings.Split(result, "\n")
-		if len(lines) > 5 {
-			for _, l := range lines[:3] {
-				fmt.Printf("  %s%s%s\n", dim, l, reset)
-			}
-			fmt.Printf("  %s… (%d lines pasted)%s\n", dim, len(lines), reset)
-		} else {
-			for _, l := range lines {
-				fmt.Printf("  %s%s%s\n", dim, l, reset)
-			}
-		}
-		return result, nil
-	}
-
-	// Non-bracketed fallback: restore U+2028 → \n
-	line = restorePasteNewlines(line)
-	line = strings.TrimRight(line, " \t")
-
-	if strings.Contains(line, "\n") {
-		return strings.TrimSpace(line), nil
-	}
-
-	// Triple-backtick block mode: collect until closing ```
-	if strings.HasPrefix(strings.TrimSpace(line), "```") {
-		// The text after ``` on the first line is included
-		first := strings.TrimSpace(line)
-		first = strings.TrimPrefix(first, "```")
-		var lines []string
-		if first != "" {
-			lines = append(lines, first)
-		}
-		for {
-			rl.SetPrompt(fmt.Sprintf("%s...%s ", dim, reset))
-			next, err := rl.Readline()
-			if err != nil {
-				if err == readline.ErrInterrupt {
-					return "", err
-				}
-				break
-			}
-			next = restorePasteNewlines(next)
-			if strings.TrimSpace(next) == "```" {
-				break
-			}
-			lines = append(lines, next)
-		}
-		return strings.TrimSpace(strings.Join(lines, "\n")), nil
-	}
-
-	// Backslash continuation mode
-	var lines []string
-	for strings.HasSuffix(line, "\\") {
-		lines = append(lines, strings.TrimSuffix(line, "\\"))
-		rl.SetPrompt(fmt.Sprintf("%s...%s ", dim, reset))
-		next, err := rl.Readline()
-		if err != nil {
-			if err == readline.ErrInterrupt {
-				return "", err
-			}
-			break
-		}
-		next = restorePasteNewlines(next)
-		line = strings.TrimRight(next, " \t")
-	}
-	lines = append(lines, line)
-
-	input := strings.TrimSpace(strings.Join(lines, "\n"))
-	return input, nil
-}
-
-// restorePasteNewlines converts U+2028 (LINE SEPARATOR) placeholders back to
-// real newlines. These placeholders are inserted by pasteStdin during bracketed
-// paste to prevent readline from treating pasted newlines as Enter.
-func restorePasteNewlines(s string) string {
-	return strings.ReplaceAll(s, string(pasteNewline), "\n")
+	bgManager.StopAll()
 }
 
 // expandAtFiles finds @path references in input and expands them to file content.
@@ -612,14 +302,6 @@ func printTurnStats(tokens int64, cacheRead int64, elapsed time.Duration) {
 }
 
 // --- Prompt ---
-
-func promptString(model string, bgCount int) string {
-	bg := ""
-	if bgCount > 0 {
-		bg = fmt.Sprintf(" %s[%d bg]%s", yellow, bgCount, reset)
-	}
-	return fmt.Sprintf("%syu%s %s%s%s%s❯ ", boldGreen, reset, dim, shortModel(model), reset, bg)
-}
 
 func shortModel(model string) string {
 	parts := strings.Split(model, "-")
@@ -1258,115 +940,6 @@ func findMemoryFile(wsDir string) string {
 	return ""
 }
 
-// yuCompleter handles both /commands and @file completion.
-type yuCompleter struct {
-	projectDir string
-	prefix     *readline.PrefixCompleter
-}
-
-func newCompleter(projectDir string) *yuCompleter {
-	items := make([]readline.PrefixCompleterInterface, len(slashCommands))
-	for i, cmd := range slashCommands {
-		items[i] = readline.PcItem(cmd)
-	}
-	return &yuCompleter{
-		projectDir: projectDir,
-		prefix:     readline.NewPrefixCompleter(items...),
-	}
-}
-
-func (c *yuCompleter) Do(line []rune, pos int) ([][]rune, int) {
-	lineStr := string(line[:pos])
-
-	// Slash command completion at start of line
-	if strings.HasPrefix(lineStr, "/") {
-		return c.prefix.Do(line, pos)
-	}
-
-	// @file completion — find the @token being typed
-	atIdx := -1
-	for i := pos - 1; i >= 0; i-- {
-		ch := line[i]
-		if ch == '@' {
-			atIdx = i
-			break
-		}
-		if ch == ' ' || ch == '\t' {
-			break
-		}
-	}
-	if atIdx < 0 {
-		return nil, 0
-	}
-
-	partial := string(line[atIdx+1 : pos])
-	matches := completeFilePath(c.projectDir, partial)
-	if len(matches) == 0 {
-		return nil, 0
-	}
-
-	// Return completions relative to what's already typed
-	var candidates [][]rune
-	for _, m := range matches {
-		suffix := m[len(partial):]
-		candidates = append(candidates, []rune(suffix))
-	}
-	return candidates, len(partial)
-}
-
-func completeFilePath(projectDir, partial string) []string {
-	// Resolve the partial path
-	dir := projectDir
-	base := partial
-	if idx := strings.LastIndex(partial, "/"); idx >= 0 {
-		dir = filepath.Join(projectDir, partial[:idx])
-		base = partial[idx+1:]
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	var matches []string
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		if !strings.HasPrefix(name, base) {
-			continue
-		}
-		rel := name
-		if idx := strings.LastIndex(partial, "/"); idx >= 0 {
-			rel = partial[:idx+1] + name
-		}
-		if e.IsDir() {
-			rel += "/"
-		}
-		matches = append(matches, rel)
-	}
-	return matches
-}
-
-func historyFile(wsDir string) string {
-	if wsDir == "" {
-		return ""
-	}
-	os.MkdirAll(wsDir, 0700)
-	return filepath.Join(wsDir, "history")
-}
-
-// filterInputRune blocks NUL bytes which can corrupt readline state.
-// All other characters are passed through — readline needs ESC, Ctrl+keys, etc.
-// The real sanitization happens in stripControlChars when saving to history.
-func filterInputRune(r rune) (rune, bool) {
-	if r == 0 {
-		return r, false
-	}
-	return r, true
-}
-
 // stripControlChars removes ANSI escape sequences and control characters from a string.
 // Used to sanitize input before saving to history.
 func stripControlChars(s string) string {
@@ -1408,33 +981,6 @@ func stripControlChars(s string) string {
 		i++
 	}
 	return b.String()
-}
-
-// sanitizeHistoryFile reads the history file, strips control characters from each line,
-// and rewrites it. This fixes corrupt history from previous sessions.
-func sanitizeHistoryFile(path string) {
-	if path == "" {
-		return
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return // file doesn't exist yet, that's fine
-	}
-
-	lines := strings.Split(string(data), "\n")
-	changed := false
-	var clean []string
-	for _, line := range lines {
-		sanitized := stripControlChars(line)
-		if sanitized != line {
-			changed = true
-		}
-		clean = append(clean, sanitized)
-	}
-
-	if changed {
-		os.WriteFile(path, []byte(strings.Join(clean, "\n")), 0600)
-	}
 }
 
 func formatTokens(n int64) string {
